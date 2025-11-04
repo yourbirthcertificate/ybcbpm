@@ -11,13 +11,23 @@ interface TempoControlsProps {
   detectedBpm: number;
   activeBpm: number;
   onBpmChange: (newBpm: number) => void;
+  currentTime: number;
+  onTimeUpdate: (time: number) => void;
 }
 
-export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detectedBpm, activeBpm, onBpmChange }) => {
+export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detectedBpm, activeBpm, onBpmChange, currentTime, onTimeUpdate }) => {
     const [isPlaying, setIsPlaying] = useState(false);
+    const [showPrecise, setShowPrecise] = useState(false);
     
     const audioContextRef = useRef<AudioContext | null>(null);
     const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+    const metronomeSourceRef = useRef<AudioBufferSourceNode | null>(null);
+
+    const gainNodeRef = useRef<GainNode | null>(null);
+    const playbackStartTimeRef = useRef(0);
+    const startOffsetRef = useRef(0);
+    const animationFrameRef = useRef<number | null>(null);
+
     const schedulerIntervalRef = useRef<number | null>(null);
     const nextNoteTimeRef = useRef<number>(0);
 
@@ -25,30 +35,73 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
     useEffect(() => {
         if (!audioContextRef.current) {
             try {
-                audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+                const context = new (window.AudioContext || (window as any).webkitAudioContext)();
+                audioContextRef.current = context;
+                gainNodeRef.current = context.createGain();
+                gainNodeRef.current.connect(context.destination);
             } catch (e) {
                 logError('Web Audio API is not supported in this browser.', e);
             }
         }
+        return () => {
+             stopPlayback();
+             audioContextRef.current?.close();
+        }
     }, []);
 
-    const stopPlayback = useCallback(() => {
-        if (audioSourceRef.current) {
-            try { audioSourceRef.current.stop(0); } catch (e) {}
-            audioSourceRef.current.disconnect();
-            audioSourceRef.current = null;
+    // Effect to handle seeking from parent
+    useEffect(() => {
+        if (Math.abs(currentTime - startOffsetRef.current) > 0.2) {
+            startOffsetRef.current = currentTime;
+            if (isPlaying) {
+                stopPlayback(false); // don't reset isPlaying state
+                startPlayback(currentTime);
+            }
+        }
+    }, [currentTime]);
+
+    const stopPlayback = useCallback((updateState = true) => {
+        if (animationFrameRef.current) {
+            cancelAnimationFrame(animationFrameRef.current);
+            animationFrameRef.current = null;
         }
         if (schedulerIntervalRef.current) {
             clearInterval(schedulerIntervalRef.current);
             schedulerIntervalRef.current = null;
         }
-        setIsPlaying(false);
+
+        if (audioSourceRef.current) {
+            try {
+                audioSourceRef.current.onended = null;
+                audioSourceRef.current.stop(0);
+            } catch (e) {}
+            audioSourceRef.current.disconnect();
+            audioSourceRef.current = null;
+        }
+        
+        if (updateState) {
+            setIsPlaying(false);
+        }
     }, []);
     
+    const tick = useCallback(() => {
+        if (isPlaying && audioContextRef.current) {
+            const elapsedTime = audioContextRef.current.currentTime - playbackStartTimeRef.current;
+            const newTime = startOffsetRef.current + elapsedTime;
+            onTimeUpdate(newTime);
+
+            if (audioBuffer && newTime >= audioBuffer.duration) {
+                stopPlayback();
+                startOffsetRef.current = audioBuffer.duration;
+            } else {
+                 animationFrameRef.current = requestAnimationFrame(tick);
+            }
+        }
+    }, [isPlaying, onTimeUpdate, audioBuffer, stopPlayback]);
+
     const scheduleClick = (time: number) => {
         const context = audioContextRef.current;
         if (!context) return;
-
         const osc = context.createOscillator();
         const gain = context.createGain();
         osc.type = 'sine';
@@ -59,43 +112,65 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
         gain.connect(context.destination);
         osc.start(time);
         osc.stop(time + 0.1);
-    }
+    };
 
     const scheduler = useCallback(() => {
         const context = audioContextRef.current;
         if (!context || activeBpm <= 0) return;
-
         const scheduleAheadTime = 0.1; // seconds
         while (nextNoteTimeRef.current < context.currentTime + scheduleAheadTime) {
             scheduleClick(nextNoteTimeRef.current);
-            const secondsPerBeat = 60.0 / activeBpm;
-            nextNoteTimeRef.current += secondsPerBeat;
+            nextNoteTimeRef.current += 60.0 / activeBpm;
         }
     }, [activeBpm]);
 
-    const handlePlayPause = useCallback(async () => {
+    const startPlayback = useCallback(async (offset: number) => {
         const context = audioContextRef.current;
-        if (!context || !audioBuffer) return;
+        if (!context || !audioBuffer || !gainNodeRef.current) return;
+        if (context.state === 'suspended') await context.resume();
 
+        stopPlayback(false);
+        const source = context.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(gainNodeRef.current);
+        source.start(0, offset);
+        
+        audioSourceRef.current = source;
+        startOffsetRef.current = offset;
+        playbackStartTimeRef.current = context.currentTime;
+
+        // Metronome
+        nextNoteTimeRef.current = context.currentTime;
+        schedulerIntervalRef.current = window.setInterval(scheduler, 25);
+        
+        setIsPlaying(true);
+        animationFrameRef.current = requestAnimationFrame(tick);
+
+        source.onended = () => {
+            if (audioSourceRef.current === source) {
+                 stopPlayback();
+            }
+        };
+
+    }, [audioBuffer, tick, scheduler, stopPlayback]);
+    
+    const handlePlayPause = useCallback(async () => {
         if (isPlaying) {
+            // Update offset before stopping
+            if (audioContextRef.current) {
+                const elapsedTime = audioContextRef.current.currentTime - playbackStartTimeRef.current;
+                startOffsetRef.current = startOffsetRef.current + elapsedTime;
+            }
             stopPlayback();
         } else {
-             if (context.state === 'suspended') {
-                await context.resume();
+            let offset = startOffsetRef.current;
+            if (audioBuffer && offset >= audioBuffer.duration - 0.01) {
+                offset = 0;
             }
-            const source = context.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(context.destination);
-            source.start(0);
-            source.onended = stopPlayback;
-            audioSourceRef.current = source;
-            
-            // Start Metronome Scheduler
-            nextNoteTimeRef.current = context.currentTime;
-            schedulerIntervalRef.current = window.setInterval(scheduler, 25);
-            setIsPlaying(true);
+            onTimeUpdate(offset);
+            startPlayback(offset);
         }
-    }, [isPlaying, audioBuffer, scheduler, stopPlayback]);
+    }, [isPlaying, audioBuffer, stopPlayback, startPlayback, onTimeUpdate]);
     
     const getButtonClass = (isActive: boolean) => 
         `px-4 py-2 rounded-md transition-colors text-sm font-semibold ${
@@ -108,20 +183,33 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
       { label: 'x2', value: detectedBpm * 2 },
     ]
 
+    const roundedActiveBpm = Math.round(activeBpm);
+    const preciseActiveBpm = formatBpm(activeBpm);
+    const hasDecimal = preciseActiveBpm.includes('.');
+    const displayValue = showPrecise ? preciseActiveBpm : roundedActiveBpm;
+
     return (
         <div className="mt-4 flex flex-col items-center gap-4">
-             <div className="text-center">
+             <div 
+                className={`text-center ${hasDecimal ? 'cursor-pointer' : ''}`}
+                onClick={() => hasDecimal && setShowPrecise(!showPrecise)}
+                title={hasDecimal ? (showPrecise ? 'Click to show rounded BPM' : 'Click to show precise BPM') : ''}
+            >
                 <p className="text-sm text-gray-400">Selected Tempo</p>
                 <p className={`text-5xl font-bold tracking-tighter bg-gradient-to-r from-blue-400 to-purple-500 text-transparent bg-clip-text transition-all duration-300 ${isPlaying ? 'animate-pulse' : ''}`}>
-                    {formatBpm(activeBpm)} <span className="text-2xl">BPM</span>
+                    {displayValue} <span className="text-2xl">BPM</span>
                 </p>
             </div>
             <div className="flex items-center justify-center gap-3 bg-gray-900/50 p-2 rounded-lg">
                {variations.map(v => (
                  <button 
                     key={v.label}
-                    onClick={() => onBpmChange(v.value)} 
-                    className={getButtonClass(formatBpm(activeBpm) === formatBpm(v.value))}>
+                    onClick={() => {
+                        stopPlayback();
+                        startOffsetRef.current = currentTime;
+                        onBpmChange(v.value)
+                    }} 
+                    className={getButtonClass(Math.round(activeBpm) === Math.round(v.value))}>
                     {v.label}
                   </button>
                ))}

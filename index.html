@@ -40,8 +40,8 @@
         const TARGET_SAMPLE_RATE = 11025;
         const MIN_BPM = 60;
         const MAX_BPM = 200;
-        const VISUAL_WEIGHT = 0.55;
-        const AUDIAL_WEIGHT = 0.45;
+        const VISUAL_WEIGHT = 0.1;
+        const AUDIAL_WEIGHT = 0.9;
         const MAX_VISUAL_PEAKS = 600;
 
         function mixDownToMono(buffer) {
@@ -172,7 +172,7 @@
                 const tempo = (60 * sampleRate) / interval;
                 const normalized = normalizeTempo(tempo);
                 if (normalized >= MIN_BPM && normalized <= MAX_BPM) {
-                    const key = Math.round(normalized);
+                    const key = Math.round(normalized * 4) / 4;
                     histogram.set(key, (histogram.get(key) || 0) + 1);
                 }
             }
@@ -221,7 +221,7 @@
                     const tempo = (60 * sampleRate) / lag;
                     const normalized = normalizeTempo(tempo);
                     if (normalized >= MIN_BPM && normalized <= MAX_BPM) {
-                        candidates.push({ tempo: Math.round(normalized), count: current });
+                        candidates.push({ tempo: normalized, count: current });
                     }
                 }
             }
@@ -232,33 +232,22 @@
         function combineCandidates(visualCandidates, audialCandidates) {
             const combined = new Map();
 
-            const accumulate = (source, weight, keyName) => {
+            const accumulate = (source, weight) => {
                 source.forEach((candidate, index) => {
-                    const tempoKey = Math.round(candidate.tempo);
-                    const existing = combined.get(tempoKey) || {
-                        tempo: tempoKey,
-                        visualScore: 0,
-                        audialScore: 0,
-                        combinedScore: 0
-                    };
+                    const tempoKey = Math.round(candidate.tempo * 4) / 4;
+                    const existing = combined.get(tempoKey) || { tempo: tempoKey, count: 0 };
                     const baseScore = candidate.count || (source.length - index);
-                    existing[keyName] += baseScore * weight;
+                    existing.count += baseScore * weight;
                     combined.set(tempoKey, existing);
                 });
             };
 
-            accumulate(visualCandidates, VISUAL_WEIGHT, 'visualScore');
-            accumulate(audialCandidates, AUDIAL_WEIGHT, 'audialScore');
+            accumulate(visualCandidates, VISUAL_WEIGHT);
+            accumulate(audialCandidates, AUDIAL_WEIGHT);
 
-            const results = Array.from(combined.values()).map(entry => {
-                const cohesionBonus = entry.visualScore && entry.audialScore
-                    ? Math.min(entry.visualScore, entry.audialScore) * 0.5
-                    : 0;
-                entry.combinedScore = entry.visualScore + entry.audialScore + cohesionBonus;
-                return { tempo: entry.tempo, count: entry.combinedScore };
-            });
-
+            const results = Array.from(combined.values());
             results.sort((a, b) => b.count - a.count);
+            
             return results;
         }
 
