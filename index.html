@@ -37,23 +37,405 @@
     var BpmAnalyser = (function() {
         "use strict";
 
+        const TEMPO_RANGE = { min: 40, max: 220 };
+        const MAX_CANDIDATES = 12;
+
         function movingAverage(data, windowSize) {
-            const smoothed = new Float32Array(data.length);
-            const radius = Math.floor(windowSize / 2);
-            for (let i = 0; i < data.length; i++) {
-                const start = Math.max(0, i - radius);
-                const end = Math.min(data.length, i + radius + 1);
-                let sum = 0;
-                for (let j = start; j < end; j++) {
-                    sum += data[j];
+            const result = new Float32Array(data.length);
+            if (windowSize <= 1) {
+                for (let i = 0; i < data.length; i++) {
+                    result[i] = data[i];
                 }
-                smoothed[i] = sum / (end - start);
+                return result;
             }
-            return smoothed;
+
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) {
+                sum += data[i];
+                if (i >= windowSize) {
+                    sum -= data[i - windowSize];
+                }
+                const divisor = i + 1 < windowSize ? i + 1 : windowSize;
+                result[i] = sum / divisor;
+            }
+            return result;
         }
 
-        function findEnvelopePeaks(data, { threshold, distance }) {
+        function toMono(buffer) {
+            const length = buffer.length;
+            const channels = buffer.numberOfChannels;
+            const output = new Float32Array(length);
+            for (let channel = 0; channel < channels; channel++) {
+                const channelData = buffer.getChannelData(channel);
+                for (let i = 0; i < length; i++) {
+                    output[i] += channelData[i];
+                }
+            }
+            const gain = 1 / channels;
+            for (let i = 0; i < length; i++) {
+                output[i] *= gain;
+            }
+            return output;
+        }
+
+        function normalize(data) {
+            const length = data.length;
+            let mean = 0;
+            for (let i = 0; i < length; i++) {
+                mean += data[i];
+            }
+            mean /= length || 1;
+
+            let maxAbs = 0;
+            const output = new Float32Array(length);
+            for (let i = 0; i < length; i++) {
+                const value = data[i] - mean;
+                output[i] = value;
+                const absValue = Math.abs(value);
+                if (absValue > maxAbs) {
+                    maxAbs = absValue;
+                }
+            }
+
+            if (maxAbs === 0) {
+                return output;
+            }
+
+            const scale = 1 / maxAbs;
+            for (let i = 0; i < length; i++) {
+                output[i] *= scale;
+            }
+
+            return output;
+        }
+
+        function computeAmplitudeEnvelope(signal, sampleRate) {
+            const rectified = new Float32Array(signal.length);
+            for (let i = 0; i < signal.length; i++) {
+                rectified[i] = Math.abs(signal[i]);
+            }
+
+            const shortWindow = Math.max(1, Math.round(sampleRate * 0.01));
+            const longWindow = Math.max(shortWindow + 1, Math.round(sampleRate * 0.04));
+
+            const shortSmoothed = movingAverage(rectified, shortWindow);
+            const longSmoothed = movingAverage(shortSmoothed, longWindow);
+            return longSmoothed;
+        }
+
+        function detectEnvelopePeaks(envelope, sampleRate) {
+            if (envelope.length === 0) {
+                return [];
+            }
+
+            let mean = 0;
+            for (let i = 0; i < envelope.length; i++) {
+                mean += envelope[i];
+            }
+            mean /= envelope.length;
+
+            let variance = 0;
+            for (let i = 0; i < envelope.length; i++) {
+                const diff = envelope[i] - mean;
+                variance += diff * diff;
+            }
+            variance /= envelope.length || 1;
+            const stdDev = Math.sqrt(variance);
+
+            const minDistance = Math.max(1, Math.round(sampleRate * 60 / (TEMPO_RANGE.max * 1.15)));
+            const thresholds = [1.6, 1.3, 1.0, 0.8, 0.6];
+
+            for (let t = 0; t < thresholds.length; t++) {
+                const threshold = mean + stdDev * thresholds[t];
+                const peaks = [];
+                let lastPeakIndex = -Infinity;
+                let lastPeakValue = 0;
+
+                for (let i = 1; i < envelope.length - 1; i++) {
+                    const value = envelope[i];
+                    if (value < threshold) {
+                        continue;
+                    }
+                    if (value <= envelope[i - 1] || value < envelope[i + 1]) {
+                        continue;
+                    }
+                    if (i - lastPeakIndex < minDistance) {
+                        if (value > lastPeakValue && peaks.length > 0) {
+                            peaks[peaks.length - 1] = i;
+                            lastPeakIndex = i;
+                            lastPeakValue = value;
+                        }
+                        continue;
+                    }
+
+                    peaks.push(i);
+                    lastPeakIndex = i;
+                    lastPeakValue = value;
+                }
+
+                if (peaks.length >= 4 || t === thresholds.length - 1) {
+                    return peaks;
+                }
+            }
+
+            return [];
+        }
+
+        function buildTempoMapFromPeaks(peakIndices, sampleRate) {
+            const tempoMap = new Map();
+            const maxNeighbors = 3;
+
+            for (let i = 0; i < peakIndices.length; i++) {
+                for (let neighbor = 1; neighbor <= maxNeighbors; neighbor++) {
+                    const j = i + neighbor;
+                    if (j >= peakIndices.length) {
+                        break;
+                    }
+
+                    const intervalSamples = peakIndices[j] - peakIndices[i];
+                    if (intervalSamples <= 0) {
+                        continue;
+                    }
+
+                    const intervalSeconds = intervalSamples / sampleRate;
+                    if (intervalSeconds <= 0) {
+                        continue;
+                    }
+
+                    let tempo = 60 / intervalSeconds;
+                    while (tempo < TEMPO_RANGE.min) {
+                        tempo *= 2;
+                    }
+                    while (tempo > TEMPO_RANGE.max) {
+                        tempo /= 2;
+                    }
+
+                    const roundedTempo = Math.round(tempo);
+                    const harmonicWeight = 1 / neighbor;
+                    const closeness = 1 - Math.min(0.5, Math.abs(tempo - roundedTempo) / tempo);
+                    const score = harmonicWeight * (1 + closeness);
+
+                    tempoMap.set(roundedTempo, (tempoMap.get(roundedTempo) || 0) + score);
+                }
+            }
+
+            return tempoMap;
+        }
+
+        function computeOnsetEnvelope(signal, sampleRate) {
+            const frameSize = Math.max(512, Math.min(4096, 1 << Math.floor(Math.log2(Math.max(512, sampleRate * 0.046)))));
+            const hopSize = Math.max(128, Math.round(frameSize / 4));
+            const numFrames = Math.max(0, Math.floor((signal.length - frameSize) / hopSize) + 1);
+
+            if (numFrames < 2) {
+                return { envelope: new Float32Array(0), hopSize };
+            }
+
+            const energies = new Float32Array(numFrames);
+            for (let frame = 0; frame < numFrames; frame++) {
+                const start = frame * hopSize;
+                let sum = 0;
+                for (let j = 0; j < frameSize; j++) {
+                    const index = start + j;
+                    if (index >= signal.length) {
+                        break;
+                    }
+                    const sample = signal[index];
+                    sum += sample * sample;
+                }
+                energies[frame] = Math.sqrt(sum / frameSize);
+            }
+
+            const onset = new Float32Array(numFrames);
+            let maxValue = 0;
+            for (let i = 1; i < numFrames; i++) {
+                const diff = energies[i] - energies[i - 1];
+                const value = diff > 0 ? diff : 0;
+                onset[i] = value;
+                if (value > maxValue) {
+                    maxValue = value;
+                }
+            }
+
+            if (maxValue > 0) {
+                const inv = 1 / maxValue;
+                for (let i = 0; i < onset.length; i++) {
+                    onset[i] *= inv;
+                }
+            }
+
+            const smoothed = movingAverage(onset, 3);
+            return { envelope: smoothed, hopSize };
+        }
+
+        function analyseAutocorrelation(onsetEnvelope, hopSize, sampleRate) {
+            const tempoMap = new Map();
+            if (onsetEnvelope.length < 4) {
+                return tempoMap;
+            }
+
+            const envelopeRate = sampleRate / hopSize;
+            const minLag = Math.max(1, Math.round(envelopeRate * 60 / TEMPO_RANGE.max));
+            const maxLag = Math.max(minLag + 1, Math.round(envelopeRate * 60 / TEMPO_RANGE.min));
+
+            const values = new Float32Array(maxLag - minLag + 1);
+            for (let lag = minLag; lag <= maxLag; lag++) {
+                let sum = 0;
+                for (let i = 0; i < onsetEnvelope.length - lag; i++) {
+                    sum += onsetEnvelope[i] * onsetEnvelope[i + lag];
+                }
+                const average = sum / (onsetEnvelope.length - lag);
+                values[lag - minLag] = average;
+            }
+
+            const localMaxima = [];
+            for (let i = 1; i < values.length - 1; i++) {
+                const prev = values[i - 1];
+                const current = values[i];
+                const next = values[i + 1];
+                if (current >= prev && current > next && current > 0) {
+                    localMaxima.push({ lag: i + minLag, value: current });
+                }
+            }
+
+            if (localMaxima.length === 0) {
+                for (let i = 0; i < values.length; i++) {
+                    const lag = i + minLag;
+                    if (values[i] <= 0) {
+                        continue;
+                    }
+                    localMaxima.push({ lag, value: values[i] });
+                }
+            }
+
+            let maxValue = 0;
+            for (let i = 0; i < localMaxima.length; i++) {
+                if (localMaxima[i].value > maxValue) {
+                    maxValue = localMaxima[i].value;
+                }
+            }
+
+            if (maxValue === 0) {
+                return tempoMap;
+            }
+
+            for (let i = 0; i < localMaxima.length; i++) {
+                const { lag, value } = localMaxima[i];
+                let tempo = 60 * envelopeRate / lag;
+                while (tempo < TEMPO_RANGE.min) {
+                    tempo *= 2;
+                }
+                while (tempo > TEMPO_RANGE.max) {
+                    tempo /= 2;
+                }
+
+                const roundedTempo = Math.round(tempo);
+                const normalizedScore = value / maxValue;
+                tempoMap.set(roundedTempo, (tempoMap.get(roundedTempo) || 0) + normalizedScore * 1.5);
+            }
+
+            return tempoMap;
+        }
+
+        function combineTempoEstimates(visualMap, audialMap) {
+            const combined = new Map();
+
+            function accumulate(source, weight) {
+                source.forEach((score, tempo) => {
+                    combined.set(tempo, (combined.get(tempo) || 0) + score * weight);
+                });
+            }
+
+            accumulate(visualMap, 1.0);
+            accumulate(audialMap, 1.2);
+
+            visualMap.forEach((visualScore, tempo) => {
+                const audialScore = audialMap.get(tempo);
+                if (audialScore) {
+                    combined.set(tempo, (combined.get(tempo) || 0) + Math.sqrt(visualScore * audialScore));
+                }
+
+                const doubleTempo = tempo * 2;
+                if (audialMap.has(doubleTempo) && doubleTempo <= TEMPO_RANGE.max) {
+                    const bonus = audialMap.get(doubleTempo) * 0.5;
+                    combined.set(tempo, (combined.get(tempo) || 0) + bonus);
+                }
+
+                const halfTempo = Math.round(tempo / 2);
+                if (audialMap.has(halfTempo) && halfTempo >= TEMPO_RANGE.min) {
+                    const bonus = audialMap.get(halfTempo) * 0.5;
+                    combined.set(tempo, (combined.get(tempo) || 0) + bonus);
+                }
+            });
+
+            return combined;
+        }
+
+        function mapToCandidates(map) {
+            const entries = Array.from(map.entries()).map(([tempo, score]) => ({ tempo, count: score }));
+            entries.sort((a, b) => b.count - a.count);
+
+            const merged = [];
+            for (let i = 0; i < entries.length; i++) {
+                const entry = entries[i];
+                let mergedEntry = null;
+                for (let j = 0; j < merged.length; j++) {
+                    if (Math.abs(merged[j].tempo - entry.tempo) <= 1) {
+                        mergedEntry = merged[j];
+                        break;
+                    }
+                }
+
+                if (mergedEntry) {
+                    mergedEntry.count = Math.max(mergedEntry.count, entry.count);
+                    mergedEntry.tempo = Math.round((mergedEntry.tempo + entry.tempo) / 2);
+                } else {
+                    merged.push({ tempo: entry.tempo, count: entry.count });
+                }
+            }
+
+            return merged
+                .map(({ tempo, count }) => ({ tempo, count: Number(count.toFixed(3)) }))
+                .sort((a, b) => b.count - a.count)
+                .slice(0, MAX_CANDIDATES);
+        }
+
+        function limitPeakTimes(peakIndices, sampleRate) {
+            const maxMarkers = 512;
+            if (peakIndices.length === 0) {
+                return [];
+            }
+
+            const step = Math.max(1, Math.floor(peakIndices.length / maxMarkers));
             const peaks = [];
-            for (let i = 1; i < data.length - 1; i++) {
-                if (data[i] > threshold && data[i] > data[i - 1] && data[i] > data[i + 1]) {
-                    if (peaks.length === 0 || (i - peaks[peaks.length - <script type="module" src="/index.tsx"></script>
+            for (let i = 0; i < peakIndices.length; i += step) {
+                const time = peakIndices[i] / sampleRate;
+                peaks.push(Number(time.toFixed(5)));
+            }
+            return peaks;
+        }
+
+        return {
+            analyse: async function(buffer) {
+                const sampleRate = buffer.sampleRate;
+                const mono = normalize(toMono(buffer));
+
+                const envelope = computeAmplitudeEnvelope(mono, sampleRate);
+                const peakIndices = detectEnvelopePeaks(envelope, sampleRate);
+                const visualTempoMap = buildTempoMapFromPeaks(peakIndices, sampleRate);
+
+                const { envelope: onsetEnvelope, hopSize } = computeOnsetEnvelope(mono, sampleRate);
+                const audialTempoMap = analyseAutocorrelation(onsetEnvelope, hopSize, sampleRate);
+
+                const combinedTempoMap = combineTempoEstimates(visualTempoMap, audialTempoMap);
+                const candidates = mapToCandidates(combinedTempoMap);
+                const peakTimes = limitPeakTimes(peakIndices, sampleRate);
+
+                return { candidates, peaks: peakTimes };
+            }
+        };
+    })();
+    </script>
+    <script>
+      window.BpmAnalyser = BpmAnalyser;
+    </script>

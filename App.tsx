@@ -39,11 +39,41 @@ const App: React.FC = () => {
 
     useEffect(() => { logInfo("App initialized.") }, []);
 
-    const findBestBpm = useCallback((candidates: BpmCandidate[]): number => {
+    const findBestBpm = useCallback((candidates: BpmCandidate[], peakTimes: number[]): number => {
         if (candidates.length === 0) return 0;
-        // The new BpmAnalyser is much smarter and groups by octave.
-        // We can now have much higher confidence in the top result.
-        return candidates[0].tempo;
+        if (peakTimes.length === 0) return candidates[0].tempo;
+
+        let bestTempo = candidates[0].tempo;
+        let bestScore = -Infinity;
+        const evaluationPeaks = peakTimes.slice(0, 64);
+
+        candidates.forEach((candidate, index) => {
+            const tempo = candidate.tempo;
+            const secondsPerBeat = 60 / tempo;
+            let alignment = 0;
+
+            for (let i = 1; i < evaluationPeaks.length; i++) {
+                const peakTime = evaluationPeaks[i];
+                const expectedBeats = Math.round(peakTime / secondsPerBeat);
+                const expectedTime = expectedBeats * secondsPerBeat;
+                const error = Math.abs(expectedTime - peakTime);
+                const tolerance = secondsPerBeat * 0.15;
+
+                if (error < tolerance) {
+                    alignment += 1 - (error / tolerance);
+                }
+            }
+
+            const confidenceBoost = candidates.length - index;
+            const combinedScore = alignment + candidate.count + confidenceBoost * 0.1;
+
+            if (combinedScore > bestScore) {
+                bestScore = combinedScore;
+                bestTempo = tempo;
+            }
+        });
+
+        return bestTempo;
     }, []);
 
     const handleFileSelect = useCallback(async (selectedFile: File) => {
