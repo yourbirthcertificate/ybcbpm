@@ -28,32 +28,283 @@
       }
     }
     </script>
-<link rel="stylesheet" href="/index.css">
+    <link rel="stylesheet" href="/index.css">
 </head>
 <body>
     <div id="root"></div>
 
     <script>
-    var BpmAnalyser = (function() {
+    (function(global) {
         "use strict";
 
-        function movingAverage(data, windowSize) {
-            const smoothed = new Float32Array(data.length);
-            const radius = Math.floor(windowSize / 2);
-            for (let i = 0; i < data.length; i++) {
-                const start = Math.max(0, i - radius);
-                const end = Math.min(data.length, i + radius + 1);
+        const TARGET_SAMPLE_RATE = 11025;
+        const MIN_BPM = 60;
+        const MAX_BPM = 200;
+        const VISUAL_WEIGHT = 0.55;
+        const AUDIAL_WEIGHT = 0.45;
+        const MAX_VISUAL_PEAKS = 600;
+
+        function mixDownToMono(buffer) {
+            if (buffer.numberOfChannels === 1) {
+                return buffer.getChannelData(0).slice();
+            }
+            const length = buffer.length;
+            const tmp = new Float32Array(length);
+            for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+                const channelData = buffer.getChannelData(channel);
+                for (let i = 0; i < length; i++) {
+                    tmp[i] += channelData[i];
+                }
+            }
+            for (let i = 0; i < length; i++) {
+                tmp[i] /= buffer.numberOfChannels;
+            }
+            return tmp;
+        }
+
+        function downsampleBuffer(data, sampleRate, targetRate) {
+            if (sampleRate <= targetRate) {
+                return data.slice();
+            }
+            const ratio = sampleRate / targetRate;
+            const newLength = Math.floor(data.length / ratio);
+            const downsampled = new Float32Array(newLength);
+            for (let i = 0; i < newLength; i++) {
+                const start = Math.floor(i * ratio);
+                const end = Math.min(data.length, Math.floor((i + 1) * ratio));
                 let sum = 0;
+                let count = 0;
                 for (let j = start; j < end; j++) {
                     sum += data[j];
+                    count++;
                 }
-                smoothed[i] = sum / (end - start);
+                downsampled[i] = count > 0 ? sum / count : 0;
+            }
+            return downsampled;
+        }
+
+        function normalize(data) {
+            let max = 0;
+            for (let i = 0; i < data.length; i++) {
+                const value = Math.abs(data[i]);
+                if (value > max) {
+                    max = value;
+                }
+            }
+            if (!max) return data;
+            const normalized = new Float32Array(data.length);
+            for (let i = 0; i < data.length; i++) {
+                normalized[i] = data[i] / max;
+            }
+            return normalized;
+        }
+
+        function smoothAbsolute(signal, windowSize) {
+            const smoothed = new Float32Array(signal.length);
+            let accumulator = 0;
+            for (let i = 0; i < signal.length; i++) {
+                const absValue = Math.abs(signal[i]);
+                accumulator += absValue;
+                if (i >= windowSize) {
+                    accumulator -= Math.abs(signal[i - windowSize]);
+                }
+                const divisor = Math.min(windowSize, i + 1);
+                smoothed[i] = accumulator / divisor;
             }
             return smoothed;
         }
 
-        function findEnvelopePeaks(data, { threshold, distance }) {
+        function movingAverage(signal, windowSize) {
+            if (windowSize <= 1) return signal.slice();
+            const result = new Float32Array(signal.length);
+            let sum = 0;
+            for (let i = 0; i < signal.length; i++) {
+                sum += signal[i];
+                if (i >= windowSize) {
+                    sum -= signal[i - windowSize];
+                }
+                const divisor = Math.min(windowSize, i + 1);
+                result[i] = sum / divisor;
+            }
+            return result;
+        }
+
+        function detectPeaks(data, sampleRate, thresholdMultiplier, minDistanceSeconds) {
             const peaks = [];
+            let sum = 0;
+            let sumSquares = 0;
+            for (let i = 0; i < data.length; i++) {
+                sum += data[i];
+                sumSquares += data[i] * data[i];
+            }
+            const mean = sum / data.length;
+            const variance = Math.max(sumSquares / data.length - mean * mean, 0);
+            const stdDev = Math.sqrt(variance);
+            const threshold = mean + stdDev * thresholdMultiplier;
+            const minDistance = Math.max(1, Math.floor(minDistanceSeconds * sampleRate));
+            let lastPeakIndex = -Infinity;
+
             for (let i = 1; i < data.length - 1; i++) {
-                if (data[i] > threshold && data[i] > data[i - 1] && data[i] > data[i + 1]) {
-                    if (peaks.length === 0 || (i - peaks[peaks.length - <script type="module" src="/index.tsx"></script>
+                const current = data[i];
+                if (current < threshold) continue;
+                if (current > data[i - 1] && current >= data[i + 1]) {
+                    if (i - lastPeakIndex >= minDistance) {
+                        peaks.push(i);
+                        lastPeakIndex = i;
+                    }
+                }
+            }
+            return peaks;
+        }
+
+        function normalizeTempo(tempo) {
+            let value = tempo;
+            while (value < MIN_BPM) value *= 2;
+            while (value > MAX_BPM) value /= 2;
+            return value;
+        }
+
+        function histogramFromIntervals(intervals, sampleRate) {
+            const histogram = new Map();
+            for (let i = 0; i < intervals.length; i++) {
+                const interval = intervals[i];
+                if (!interval) continue;
+                const tempo = (60 * sampleRate) / interval;
+                const normalized = normalizeTempo(tempo);
+                if (normalized >= MIN_BPM && normalized <= MAX_BPM) {
+                    const key = Math.round(normalized);
+                    histogram.set(key, (histogram.get(key) || 0) + 1);
+                }
+            }
+            return Array.from(histogram.entries()).map(([tempo, count]) => ({ tempo, count }));
+        }
+
+        function visualTempoEstimation(envelopePeaks, sampleRate) {
+            if (envelopePeaks.length < 2) return [];
+            const intervals = [];
+            for (let i = 1; i < envelopePeaks.length; i++) {
+                const interval = envelopePeaks[i] - envelopePeaks[i - 1];
+                if (interval > 0) {
+                    intervals.push(interval);
+                }
+            }
+            const histogram = histogramFromIntervals(intervals, sampleRate);
+            histogram.sort((a, b) => b.count - a.count);
+            return histogram;
+        }
+
+        function computeAutoCorrelation(signal, sampleRate) {
+            const minLag = Math.max(1, Math.floor((sampleRate * 60) / MAX_BPM));
+            const maxLag = Math.min(signal.length - 1, Math.floor((sampleRate * 60) / MIN_BPM));
+            const correlations = new Float32Array(maxLag - minLag + 1);
+            let energy = 0;
+            for (let i = 0; i < signal.length; i++) {
+                energy += signal[i] * signal[i];
+            }
+            if (!energy) {
+                return [];
+            }
+            for (let lag = minLag; lag <= maxLag; lag++) {
+                let sum = 0;
+                for (let i = 0; i < signal.length - lag; i++) {
+                    sum += signal[i] * signal[i + lag];
+                }
+                correlations[lag - minLag] = sum / (signal.length - lag);
+            }
+
+            const candidates = [];
+            for (let i = 1; i < correlations.length - 1; i++) {
+                const current = correlations[i];
+                if (current <= 0) continue;
+                if (current > correlations[i - 1] && current >= correlations[i + 1]) {
+                    const lag = i + minLag;
+                    const tempo = (60 * sampleRate) / lag;
+                    const normalized = normalizeTempo(tempo);
+                    if (normalized >= MIN_BPM && normalized <= MAX_BPM) {
+                        candidates.push({ tempo: Math.round(normalized), count: current });
+                    }
+                }
+            }
+            candidates.sort((a, b) => b.count - a.count);
+            return candidates;
+        }
+
+        function combineCandidates(visualCandidates, audialCandidates) {
+            const combined = new Map();
+
+            const accumulate = (source, weight, keyName) => {
+                source.forEach((candidate, index) => {
+                    const tempoKey = Math.round(candidate.tempo);
+                    const existing = combined.get(tempoKey) || {
+                        tempo: tempoKey,
+                        visualScore: 0,
+                        audialScore: 0,
+                        combinedScore: 0
+                    };
+                    const baseScore = candidate.count || (source.length - index);
+                    existing[keyName] += baseScore * weight;
+                    combined.set(tempoKey, existing);
+                });
+            };
+
+            accumulate(visualCandidates, VISUAL_WEIGHT, 'visualScore');
+            accumulate(audialCandidates, AUDIAL_WEIGHT, 'audialScore');
+
+            const results = Array.from(combined.values()).map(entry => {
+                const cohesionBonus = entry.visualScore && entry.audialScore
+                    ? Math.min(entry.visualScore, entry.audialScore) * 0.5
+                    : 0;
+                entry.combinedScore = entry.visualScore + entry.audialScore + cohesionBonus;
+                return { tempo: entry.tempo, count: entry.combinedScore };
+            });
+
+            results.sort((a, b) => b.count - a.count);
+            return results;
+        }
+
+        async function analyse(buffer) {
+            const monoData = mixDownToMono(buffer);
+            const downsampled = downsampleBuffer(monoData, buffer.sampleRate, TARGET_SAMPLE_RATE);
+            const normalized = normalize(downsampled);
+
+            const envelopeWindow = Math.max(1, Math.round(TARGET_SAMPLE_RATE * 0.02));
+            const envelope = smoothAbsolute(normalized, envelopeWindow);
+            const enhancedEnvelope = movingAverage(envelope, Math.round(envelopeWindow * 0.5));
+
+            const minPeakSpacingSeconds = 60 / MAX_BPM / 2;
+            const envelopePeaks = detectPeaks(
+                enhancedEnvelope,
+                TARGET_SAMPLE_RATE,
+                1.25,
+                minPeakSpacingSeconds
+            );
+
+            const trimmedPeaks = envelopePeaks.slice(0, MAX_VISUAL_PEAKS);
+            const peakTimes = trimmedPeaks.map(index => index / TARGET_SAMPLE_RATE);
+
+            const visualCandidates = visualTempoEstimation(envelopePeaks, TARGET_SAMPLE_RATE);
+
+            const onsetSignal = new Float32Array(enhancedEnvelope.length);
+            onsetSignal[0] = 0;
+            for (let i = 1; i < enhancedEnvelope.length; i++) {
+                const diff = enhancedEnvelope[i] - enhancedEnvelope[i - 1];
+                onsetSignal[i] = diff > 0 ? diff : 0;
+            }
+            const audialCandidates = computeAutoCorrelation(onsetSignal, TARGET_SAMPLE_RATE);
+
+            const combinedCandidates = combineCandidates(visualCandidates, audialCandidates).slice(0, 24);
+
+            return {
+                candidates: combinedCandidates,
+                peaks: peakTimes
+            };
+        }
+
+        global.BpmAnalyser = {
+            analyse
+        };
+    })(window);
+    </script>
+    <script type="module" src="/index.tsx"></script>
+</body>
+</html>
