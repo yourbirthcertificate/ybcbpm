@@ -1,0 +1,5 @@
+{
+  "name": "AI BPM Detector",
+  "description": "An intelligent BPM (Beats Per Minute) detector for audio files. Upload an MP3, FLAC, WAV, or OGG file to instantly analyze its tempo. Additionally, leverage AI to get musical insights, including associated genres and example songs for the detected BPM.",
+  "requestFramePermissions": []
+}

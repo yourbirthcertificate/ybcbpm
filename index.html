@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI BPM Detector</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #111827; }
+        .animate-fade-in { animation: fadeIn 0.5s ease-in-out; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-pulse { animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .7; }
+        }
+    </style>
+    <script type="importmap">
+    {
+      "imports": {
+        "@google/genai": "https://aistudiocdn.com/@google/genai@^1.28.0",
+        "react/": "https://aistudiocdn.com/react@^19.2.0/",
+        "react": "https://aistudiocdn.com/react@^19.2.0",
+        "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/"
+      }
+    }
+    </script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body>
+    <div id="root"></div>
+
+    <script>
+    var BpmAnalyser = (function() {
+        "use strict";
+
+        function movingAverage(data, windowSize) {
+            const smoothed = new Float32Array(data.length);
+            const radius = Math.floor(windowSize / 2);
+            for (let i = 0; i < data.length; i++) {
+                const start = Math.max(0, i - radius);
+                const end = Math.min(data.length, i + radius + 1);
+                let sum = 0;
+                for (let j = start; j < end; j++) {
+                    sum += data[j];
+                }
+                smoothed[i] = sum / (end - start);
+            }
+            return smoothed;
+        }
+
+        function findEnvelopePeaks(data, { threshold, distance }) {
+            const peaks = [];
+            for (let i = 1; i < data.length - 1; i++) {
+                if (data[i] > threshold && data[i] > data[i - 1] && data[i] > data[i + 1]) {
+                    if (peaks.length === 0 || (i - peaks[peaks.length - <script type="module" src="/index.tsx"></script>
