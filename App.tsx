@@ -348,8 +348,13 @@ const App: React.FC = () => {
 
     }, [resetState, settings.useGemini]);
     
-    const handleFeedbackSubmit = (feedback: { correctBpm: string; comments: string }) => {
-        logInfo("Feedback submitted", { ...feedback, fileName: file?.name, detectedBpm: analysisResult?.candidates[0]?.tempo });
+    const handleFeedbackSubmit = (feedback: { correctBpm: string; correctKey: string; comments: string }) => {
+        logInfo("Feedback submitted", { 
+            ...feedback, 
+            fileName: file?.name, 
+            detectedBpm: analysisResult?.candidates[0]?.tempo,
+            detectedKey: analysisResult?.key,
+        });
         downloadLogs();
         setIsFeedbackModalOpen(false);
     };
@@ -408,7 +413,7 @@ const App: React.FC = () => {
                     <div>
                         <span className="hero-badge"><span role="img" aria-hidden="true">🪄</span> Tempo Intelligence</span>
                         <h1 className="mt-3 text-3xl md:text-4xl font-bold tracking-tight bg-gradient-to-r from-blue-300 via-sky-300 to-purple-300 text-transparent bg-clip-text">
-                            YBCBPM <span className="text-white/60 text-base align-middle">v1.0</span>
+                            YBCBPM <span className="text-white/60 text-base align-middle">DEV MODE 🚧</span>
                         </h1>
                     </div>
                     <p className="text-sm md:text-base text-slate-300 max-w-xl md:text-right">
@@ -534,6 +539,8 @@ const App: React.FC = () => {
                                             onAdjustClick={() => setIsAdjustingBeat(true)}
                                             onCancelAdjust={() => setIsAdjustingBeat(false)}
                                             onResetBeat={handleResetBeat}
+                                            musicalKey={analysisResult.key}
+                                            keyConfidence={analysisResult.keyConfidence}
                                         />
 
                                         <WaveformVisualizer
@@ -589,6 +596,7 @@ const App: React.FC = () => {
                 onClose={() => setIsFeedbackModalOpen(false)}
                 onSubmit={handleFeedbackSubmit}
                 detectedBpm={detectedBpm}
+                detectedKey={analysisResult?.key}
                 fileName={file?.name}
             />
         </div>

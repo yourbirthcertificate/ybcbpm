@@ -4,18 +4,21 @@ import { formatBpm } from '../utils/formatters';
 interface FeedbackModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (feedback: { correctBpm: string; comments: string }) => void;
+  onSubmit: (feedback: { correctBpm: string; correctKey: string; comments: string }) => void;
   detectedBpm?: number;
+  detectedKey?: string | null;
   fileName?: string;
 }
 
-export const FeedbackModal: React.FC<FeedbackModalProps> = ({ isOpen, onClose, onSubmit, detectedBpm, fileName }) => {
+export const FeedbackModal: React.FC<FeedbackModalProps> = ({ isOpen, onClose, onSubmit, detectedBpm, detectedKey, fileName }) => {
   const [correctBpm, setCorrectBpm] = useState('');
+  const [correctKey, setCorrectKey] = useState('');
   const [comments, setComments] = useState('');
 
   useEffect(() => {
     if (isOpen) {
       setCorrectBpm('');
+      setCorrectKey('');
       setComments('');
     }
   }, [isOpen]);
@@ -26,7 +29,7 @@ export const FeedbackModal: React.FC<FeedbackModalProps> = ({ isOpen, onClose, o
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmit({ correctBpm, comments: comments.trim() });
+    onSubmit({ correctBpm, correctKey, comments: comments.trim() });
   };
 
   const hasFileInfo = typeof detectedBpm !== 'undefined' && fileName;
@@ -43,14 +46,18 @@ export const FeedbackModal: React.FC<FeedbackModalProps> = ({ isOpen, onClose, o
       >
         <h2 className="text-2xl font-bold mb-4 text-center">Submit Feedback</h2>
         {hasFileInfo && (
-            <>
-                <p className="text-center text-gray-400 mb-2">File: <span className="font-mono">{fileName}</span></p>
-                <p className="text-center text-gray-400 mb-6">Detected BPM: <span className="font-bold text-white">{formatBpm(detectedBpm)}</span></p>
-            </>
+            <div className="text-center mb-6">
+                <p className="text-gray-400 mb-2">File: <span className="font-mono">{fileName}</span></p>
+                <div className="flex justify-center gap-6">
+                    <p className="text-gray-400">Detected BPM: <span className="font-bold text-white">{formatBpm(detectedBpm)}</span></p>
+                    {detectedKey && <p className="text-gray-400">Detected Key: <span className="font-bold text-white">{detectedKey}</span></p>}
+                </div>
+            </div>
         )}
 
         <form onSubmit={handleSubmit}>
             {hasFileInfo && (
+              <>
                 <div className="mb-4">
                     <label htmlFor="correct-bpm" className="block text-sm font-medium text-gray-300 mb-2">What is the correct BPM?</label>
                     <input
@@ -65,6 +72,18 @@ export const FeedbackModal: React.FC<FeedbackModalProps> = ({ isOpen, onClose, o
                     className="w-full bg-gray-900 border border-gray-600 rounded-lg p-3 text-white focus:ring-blue-500 focus:border-blue-500"
                     />
                 </div>
+                 <div className="mb-4">
+                    <label htmlFor="correct-key" className="block text-sm font-medium text-gray-300 mb-2">What is the correct Key? (Optional)</label>
+                    <input
+                    type="text"
+                    id="correct-key"
+                    value={correctKey}
+                    onChange={(e) => setCorrectKey(e.target.value)}
+                    placeholder="e.g., C# minor"
+                    className="w-full bg-gray-900 border border-gray-600 rounded-lg p-3 text-white focus:ring-blue-500 focus:border-blue-500"
+                    />
+                </div>
+              </>
             )}
 
           <div className="mb-6">

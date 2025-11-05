@@ -12,6 +12,8 @@ interface BpmDisplayProps {
   onAdjustClick: () => void;
   onCancelAdjust: () => void;
   onResetBeat: () => void;
+  musicalKey?: string | null;
+  keyConfidence?: number;
 }
 
 const InfoIcon = (props: React.SVGProps<SVGSVGElement>) => (
@@ -22,18 +24,35 @@ const InfoIcon = (props: React.SVGProps<SVGSVGElement>) => (
     </svg>
 );
 
-export const BpmDisplay: React.FC<BpmDisplayProps> = ({ bpm, tempoVariability, year, firstBeatTime, isUserDefined, isAdjusting, onAdjustClick, onCancelAdjust, onResetBeat }) => {
+export const BpmDisplay: React.FC<BpmDisplayProps> = ({ bpm, tempoVariability, year, firstBeatTime, isUserDefined, isAdjusting, onAdjustClick, onCancelAdjust, onResetBeat, musicalKey, keyConfidence }) => {
   const showVariability = tempoVariability && tempoVariability.stdDev > 1.2 && (tempoVariability.max - tempoVariability.min > 2.5);
   const isOldSong = year && parseInt(year, 10) < 1975;
   const showExtraInfo = showVariability || (firstBeatTime && firstBeatTime > 0);
   
   return (
     <div className="text-center">
-      <p className="text-sm text-slate-400 tracking-[0.3em] uppercase">Detected Tempo</p>
-      <p className="text-6xl md:text-8xl font-bold tracking-tighter bg-gradient-to-r from-blue-300 via-sky-300 to-purple-400 text-transparent bg-clip-text drop-shadow-[0_18px_45px_rgba(59,130,246,0.25)]">
-        {formatBpm(bpm)}
-      </p>
-      <p className="text-xl text-slate-300">BPM</p>
+      <div className="flex items-end justify-center gap-6 md:gap-8">
+        <div>
+            <p className="text-sm text-slate-400 tracking-[0.3em] uppercase">Detected Tempo</p>
+            <p className="text-6xl md:text-8xl font-bold tracking-tighter bg-gradient-to-r from-blue-300 via-sky-300 to-purple-400 text-transparent bg-clip-text drop-shadow-[0_18px_45px_rgba(59,130,246,0.25)]">
+                {formatBpm(bpm)}
+            </p>
+            <p className="text-xl text-slate-300">BPM</p>
+        </div>
+
+        {musicalKey && (
+            <div className="pb-2 md:pb-3 border-l-2 border-white/10 pl-6 md:pl-8">
+                <p className="text-sm text-slate-400 tracking-[0.3em] uppercase">Estimated Key</p>
+                <p className="text-4xl md:text-5xl font-bold tracking-tighter bg-gradient-to-r from-blue-300 via-sky-300 to-purple-400 text-transparent bg-clip-text">
+                    {musicalKey.replace(' major', '').replace(' minor', 'm')}
+                </p>
+                 <p className="text-md text-slate-300">
+                    {musicalKey.includes('major') ? 'Major' : 'Minor'}
+                    {typeof keyConfidence === 'number' && ` (${Math.round(keyConfidence * 100)}% conf.)`}
+                </p>
+            </div>
+        )}
+      </div>
 
       {showExtraInfo && (
           <div className="mt-6 pt-4 border-t border-white/10 space-y-4 animate-fade-in text-sm text-center">

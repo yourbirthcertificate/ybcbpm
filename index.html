@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YBCBPM - v1.0</title>
+    <title>YBCBPM - dev mode</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         .animate-fade-in { animation: fadeIn 0.5s ease-in-out; }
@@ -51,6 +51,166 @@
             const VISUAL_LOOKAHEAD_PEAKS = 8;
             const PEAK_THRESHOLD_MULTIPLIER = 1.5;
             const ONSET_SMOOTHING_WINDOW_SECONDS = 0.04;
+
+            // --- START: Key Detection Constants & Helpers ---
+            const PITCH_CLASS_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+            const MAJOR_PROFILE = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+            const MINOR_PROFILE = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+
+            function fft(real, imag) {
+                const n = real.length;
+                if (n === 0) return;
+                if ((n & (n - 1)) !== 0) {
+                    console.warn('FFT input length is not a power of 2. Results may be incorrect.');
+                }
+                let j = 0;
+                for (let i = 0; i < n; i++) {
+                    if (i < j) {
+                        [real[i], real[j]] = [real[j], real[i]];
+                        [imag[i], imag[j]] = [imag[j], imag[i]];
+                    }
+                    let m = n >> 1;
+                    while (j >= m && m > 0) {
+                        j -= m;
+                        m >>= 1;
+                    }
+                    j += m;
+                }
+                for (let size = 2; size <= n; size <<= 1) {
+                    const halfSize = size >> 1;
+                    const angleStep = -2 * Math.PI / size;
+                    for (let i = 0; i < n; i += size) {
+                        let cos = 1;
+                        let sin = 0;
+                        for (let j = i; j < i + halfSize; j++) {
+                            const k = j + halfSize;
+                            const tReal = real[k] * cos - imag[k] * sin;
+                            const tImag = real[k] * sin + imag[k] * cos;
+                            real[k] = real[j] - tReal;
+                            imag[k] = imag[j] - tImag;
+                            real[j] += tReal;
+                            imag[j] += tImag;
+                            const nextCos = cos * Math.cos(angleStep) - sin * Math.sin(angleStep);
+                            sin = cos * Math.sin(angleStep) + sin * Math.cos(angleStep);
+                            cos = nextCos;
+                        }
+                    }
+                }
+            }
+
+            function fftMag(window) {
+                const n = window.length;
+                let N = 1;
+                while (N < n) N <<= 1;
+                const real = new Float32Array(N);
+                real.set(window);
+                const imag = new Float32Array(N);
+                fft(real, imag);
+                const mag = new Float32Array(N / 2);
+                for (let i = 0; i < N / 2; i++) {
+                    mag[i] = Math.sqrt(real[i] * real[i] + imag[i] * imag[i]);
+                }
+                return mag;
+            }
+            
+            function applyHannWindow(buffer) {
+                const N = buffer.length;
+                for (let n = 0; n < N; n++) {
+                    buffer[n] *= 0.5 * (1 - Math.cos((2 * Math.PI * n) / (N - 1)));
+                }
+            }
+
+            function freqToPitchClass(freq) {
+                const A4 = 440;
+                const semitone = 12 * Math.log2(freq / A4);
+                const midi = Math.round(semitone) + 69;
+                return ((midi % 12) + 12) % 12;
+            }
+
+            function accumulateChromaFromSpectrum(spectrum, sampleRate, chroma) {
+                const binCount = spectrum.length;
+                const nyquist = sampleRate / 2;
+                for (let bin = 1; bin < binCount; bin++) {
+                    const freq = (bin / binCount) * nyquist;
+                    if (freq < 50 || freq > 5000) continue;
+                    const magnitude = spectrum[bin];
+                    if (magnitude <= 0) continue;
+                    const pitchClass = freqToPitchClass(freq);
+                    chroma[pitchClass] += magnitude;
+                }
+            }
+
+            function normalizeVector(v) {
+                let sum = 0;
+                for (let i = 0; i < v.length; i++) sum += v[i];
+                if (sum <= 0) return;
+                for (let i = 0; i < v.length; i++) v[i] /= sum;
+            }
+            
+            function rotate(arr, shift) {
+                const out = new Float32Array(12);
+                for (let i = 0; i < 12; i++) {
+                    out[i] = arr[(i - shift + 12) % 12];
+                }
+                return out;
+            }
+
+            function correlation(a, b) {
+                let sum = 0, sumA2 = 0, sumB2 = 0;
+                for (let i = 0; i < a.length; i++) {
+                    sum += a[i] * b[i];
+                    sumA2 += a[i] * a[i];
+                    sumB2 += b[i] * b[i];
+                }
+                const denom = Math.sqrt(sumA2 * sumB2) || 1;
+                return sum / denom;
+            }
+            
+            function estimateKeyFromChroma(chroma) {
+                let bestScore = -Infinity;
+                let bestKey = null;
+
+                for (let root = 0; root < 12; root++) {
+                    const majorScore = correlation(chroma, rotate(MAJOR_PROFILE, root));
+                    if (majorScore > bestScore) {
+                        bestScore = majorScore;
+                        bestKey = \`\${PITCH_CLASS_NAMES[root]} major\`;
+                    }
+                    const minorScore = correlation(chroma, rotate(MINOR_PROFILE, root));
+                    if (minorScore > bestScore) {
+                        bestScore = minorScore;
+                        bestKey = \`\${PITCH_CLASS_NAMES[root]} minor\`;
+                    }
+                }
+                const confidence = Math.max(0, Math.min(1, bestScore));
+                return { key: bestKey, confidence };
+            }
+
+            function detectKey(pcm, sampleRate) {
+                const maxSeconds = 45;
+                const maxSamples = Math.min(pcm.length, maxSeconds * sampleRate);
+                const segment = pcm.subarray(0, maxSamples);
+                const windowSize = 4096;
+                const hopSize = 2048;
+                const chroma = new Float32Array(12);
+                const window = new Float32Array(windowSize);
+                let frames = 0;
+
+                for (let start = 0; start + windowSize < segment.length; start += hopSize) {
+                    window.set(segment.subarray(start, start + windowSize));
+                    applyHannWindow(window);
+                    const spectrum = fftMag(window);
+                    accumulateChromaFromSpectrum(spectrum, sampleRate, chroma);
+                    frames++;
+                }
+
+                if (frames === 0) return { key: null, confidence: 0 };
+
+                normalizeVector(chroma);
+                return estimateKeyFromChroma(chroma);
+            }
+            // --- END: Key Detection ---
+
 
             function mixDownToMono(buffer) {
                 if (buffer.numberOfChannels === 1) {
@@ -370,6 +530,9 @@
                 // --- Overall Analysis ---
                 const overallResult = performFullAnalysis(normalized, TARGET_SAMPLE_RATE);
 
+                // --- Key Analysis ---
+                const keyResult = detectKey(normalized, TARGET_SAMPLE_RATE);
+
                 // --- Segmented Analysis for Variability ---
                 const CHUNK_SECONDS = 20;
                 const CHUNK_OVERLAP_SECONDS = 10;
@@ -426,6 +589,9 @@
                     candidates: overallResult.candidates,
                     peaks: overallResult.peaks.map(p => p + (buffer.length / buffer.sampleRate - songDuration)), // Adjust peak times for full buffer
                     tempoVariability: tempoVariability,
+                    key: keyResult.key,
+                    keyConfidence: keyResult.confidence,
+                    keySource: 'analysis',
                 };
             }
 

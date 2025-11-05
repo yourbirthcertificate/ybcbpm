@@ -55,4 +55,8 @@ export interface AnalysisResult {
   candidates: BpmCandidate[];
   peaks: number[];
   tempoVariability: TempoVariability | null;
+  // New fields for key detection
+  key?: string | null;
+  keyConfidence?: number;
+  keySource?: 'analysis' | 'tag';
 }
