@@ -10,7 +10,7 @@ interface SettingsMenuProps {
 
 export const SettingsMenu: React.FC<SettingsMenuProps> = ({ settings, onSettingsChange, onOpenFeedback }) => {
     return (
-        <div className="mt-8 pt-6 border-t border-gray-700/50 flex flex-wrap justify-center items-center gap-x-8 gap-y-4 text-sm text-gray-400">
+        <div className="rounded-2xl border border-white/10 bg-slate-900/40 px-5 py-6 flex flex-wrap justify-center items-center gap-5 text-sm text-slate-200 shadow-lg shadow-blue-900/20">
             <ToggleSwitch
                 label="Gemini AI Features"
                 checked={settings.useGemini}
@@ -29,10 +29,10 @@ export const SettingsMenu: React.FC<SettingsMenuProps> = ({ settings, onSettings
                 onChange={(checked) => onSettingsChange({ verboseLogging: checked })}
                 title="Prints detailed logs to the browser console."
             />
-             <button
+            <button
                 onClick={onOpenFeedback}
-                className="hover:text-blue-400 transition-colors"
-             >
+                className="px-4 py-2 rounded-full border border-white/10 bg-white/5 text-slate-200 hover:border-blue-400/40 hover:text-blue-200 transition-colors"
+            >
                 Feedback?
             </button>
         </div>
