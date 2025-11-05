@@ -43,6 +43,8 @@
         const VISUAL_WEIGHT = 0.1;
         const AUDIAL_WEIGHT = 0.9;
         const MAX_VISUAL_PEAKS = 600;
+        const PEAK_THRESHOLD_MULTIPLIER = 1.5;
+        const ONSET_SMOOTHING_WINDOW_SECONDS = 0.04;
 
         function mixDownToMono(buffer) {
             if (buffer.numberOfChannels === 1) {
@@ -229,7 +231,37 @@
             return candidates;
         }
 
-        function combineCandidates(visualCandidates, audialCandidates) {
+        function tempoAlignmentScore(peaks, tempo, sampleRate) {
+            if (peaks.length < 2) return 0;
+            const period = (60 / tempo) * sampleRate;
+            if (!isFinite(period) || period <= 0) {
+                return 0;
+            }
+            const multipliers = [0.5, 1, 1.5, 2];
+            const tolerance = period * 0.3;
+            if (tolerance <= 0) return 0;
+            let score = 0;
+            let count = 0;
+            for (let i = 1; i < peaks.length; i++) {
+                const interval = peaks[i] - peaks[i - 1];
+                if (interval <= 0) continue;
+                let bestDistance = Infinity;
+                for (let j = 0; j < multipliers.length; j++) {
+                    const target = period * multipliers[j];
+                    const distance = Math.abs(interval - target);
+                    if (distance < bestDistance) {
+                        bestDistance = distance;
+                    }
+                }
+                const normalized = Math.min(bestDistance / tolerance, 1);
+                score += 1 - normalized;
+                count++;
+            }
+            if (!count) return 0;
+            return score / count;
+        }
+
+        function combineCandidates(visualCandidates, audialCandidates, envelopePeaks) {
             const combined = new Map();
 
             const accumulate = (source, weight) => {
@@ -246,8 +278,12 @@
             accumulate(audialCandidates, AUDIAL_WEIGHT);
 
             const results = Array.from(combined.values());
+            results.forEach(candidate => {
+                const alignment = tempoAlignmentScore(envelopePeaks, candidate.tempo, TARGET_SAMPLE_RATE);
+                candidate.count *= 1 + alignment;
+            });
             results.sort((a, b) => b.count - a.count);
-            
+
             return results;
         }
 
@@ -260,11 +296,11 @@
             const envelope = smoothAbsolute(normalized, envelopeWindow);
             const enhancedEnvelope = movingAverage(envelope, Math.round(envelopeWindow * 0.5));
 
-            const minPeakSpacingSeconds = 60 / MAX_BPM / 2;
+            const minPeakSpacingSeconds = 60 / MAX_BPM;
             const envelopePeaks = detectPeaks(
                 enhancedEnvelope,
                 TARGET_SAMPLE_RATE,
-                1.25,
+                PEAK_THRESHOLD_MULTIPLIER,
                 minPeakSpacingSeconds
             );
 
@@ -279,9 +315,11 @@
                 const diff = enhancedEnvelope[i] - enhancedEnvelope[i - 1];
                 onsetSignal[i] = diff > 0 ? diff : 0;
             }
-            const audialCandidates = computeAutoCorrelation(onsetSignal, TARGET_SAMPLE_RATE);
+            const onsetSmoothingWindow = Math.max(1, Math.round(TARGET_SAMPLE_RATE * ONSET_SMOOTHING_WINDOW_SECONDS));
+            const onsetSmoothed = movingAverage(onsetSignal, onsetSmoothingWindow);
+            const audialCandidates = computeAutoCorrelation(onsetSmoothed, TARGET_SAMPLE_RATE);
 
-            const combinedCandidates = combineCandidates(visualCandidates, audialCandidates).slice(0, 24);
+            const combinedCandidates = combineCandidates(visualCandidates, audialCandidates, envelopePeaks).slice(0, 24);
 
             return {
                 candidates: combinedCandidates,
