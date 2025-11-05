@@ -1,5 +1,4 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
-import { logError } from '../services/loggingService';
 
 // --- Icon Components ---
 const ZoomInIcon = (props: React.SVGProps<SVGSVGElement>) => (
@@ -26,15 +25,16 @@ const PEAK_COLOR = 'rgba(255, 255, 255, 0.5)';
 const SCRUBBER_COLOR = '#F87171'; // A bright red/coral
 
 export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuffer, peaks, duration, currentTime, onSeek }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const waveformCanvasRef = useRef<HTMLCanvasElement>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const parentRef = useRef<HTMLDivElement>(null);
   
   const [viewRange, setViewRange] = useState({ start: 0, end: 1 }); // Range as a fraction [0, 1]
   const [isPanning, setIsPanning] = useState(false);
   const panStartInfo = useRef({ x: 0, start: 0, moved: false });
   
-  const draw = useCallback(() => {
-    const canvas = canvasRef.current;
+  const drawWaveform = useCallback(() => {
+    const canvas = waveformCanvasRef.current;
     if (!canvas || !audioBuffer) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -105,8 +105,24 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
         }
     });
 
-    // Draw scrubber if in view
-    if (currentTime >= viewRange.start * duration && currentTime <= viewRange.end * duration) {
+    ctx.restore();
+  }, [audioBuffer, peaks, viewRange, duration]);
+
+  const drawScrubber = useCallback(() => {
+    const canvas = overlayCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const width = canvas.width / dpr;
+    const height = canvas.height / dpr;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.scale(dpr, dpr);
+
+    if (duration > 0 && currentTime >= viewRange.start * duration && currentTime <= viewRange.end * duration) {
       const scrubberX = ((currentTime / duration - viewRange.start) / (viewRange.end - viewRange.start)) * width;
       ctx.lineWidth = 2;
       ctx.strokeStyle = SCRUBBER_COLOR;
@@ -115,31 +131,44 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
       ctx.lineTo(scrubberX, height);
       ctx.stroke();
     }
+
     ctx.restore();
-  }, [audioBuffer, peaks, viewRange, currentTime, duration]);
+  }, [currentTime, duration, viewRange]);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
+    const waveformCanvas = waveformCanvasRef.current;
+    const overlayCanvas = overlayCanvasRef.current;
     const container = parentRef.current;
-    if (!container || !canvas) return;
+    if (!container || !waveformCanvas || !overlayCanvas) return;
 
     const resizeObserver = new ResizeObserver(() => {
       const dpr = window.devicePixelRatio || 1;
       const rect = container.getBoundingClientRect();
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
-      canvas.style.width = `${rect.width}px`;
-      canvas.style.height = `${rect.height}px`;
-      draw();
+      waveformCanvas.width = rect.width * dpr;
+      waveformCanvas.height = rect.height * dpr;
+      waveformCanvas.style.width = `${rect.width}px`;
+      waveformCanvas.style.height = `${rect.height}px`;
+
+      overlayCanvas.width = rect.width * dpr;
+      overlayCanvas.height = rect.height * dpr;
+      overlayCanvas.style.width = `${rect.width}px`;
+      overlayCanvas.style.height = `${rect.height}px`;
+
+      drawWaveform();
+      drawScrubber();
     });
 
     resizeObserver.observe(container);
     return () => resizeObserver.disconnect();
-  }, [draw]);
+  }, [drawWaveform, drawScrubber]);
 
   useEffect(() => {
-    draw();
-  }, [draw]);
+    drawWaveform();
+  }, [drawWaveform]);
+
+  useEffect(() => {
+    drawScrubber();
+  }, [drawScrubber]);
 
   const handleZoom = (factor: number) => {
     const currentRange = viewRange.end - viewRange.start;
@@ -167,20 +196,20 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isPanning || !canvasRef.current) return;
-    
+    if (!isPanning || !waveformCanvasRef.current) return;
+
     if (!panStartInfo.current.moved && Math.abs(e.clientX - panStartInfo.current.x) > 5) {
         panStartInfo.current.moved = true;
     }
-    
+
     if (panStartInfo.current.moved) {
         const deltaX = e.clientX - panStartInfo.current.x;
-        const width = canvasRef.current.getBoundingClientRect().width;
+        const width = waveformCanvasRef.current.getBoundingClientRect().width;
         const deltaRange = (deltaX / width) * (viewRange.end - viewRange.start);
-        
+
         let newStart = panStartInfo.current.start - deltaRange;
         newStart = Math.max(0, Math.min(1 - (viewRange.end - viewRange.start), newStart));
-        
+
         setViewRange({ start: newStart, end: newStart + (viewRange.end - viewRange.start) });
     }
   };
@@ -201,14 +230,18 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
 
   return (
     <div className="w-full h-[100px] relative select-none" ref={parentRef}>
-      <canvas 
-          ref={canvasRef} 
+      <canvas
+          ref={waveformCanvasRef}
           className="w-full h-full block rounded-md cursor-pointer"
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={() => setIsPanning(false)}
           onClick={handleClick}
+      />
+      <canvas
+          ref={overlayCanvasRef}
+          className="w-full h-full block rounded-md pointer-events-none"
       />
       <div className="absolute top-2 right-2 flex gap-1 z-10">
         <button onClick={() => handleZoom(0.5)} className={controlButtonClasses} title="Zoom In"><ZoomInIcon /></button>
