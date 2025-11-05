@@ -19,13 +19,15 @@ interface WaveformVisualizerProps {
   duration: number;
   currentTime: number;
   onSeek: (time: number) => void;
+  beatInfo: { phase: number; interval: number; firstBeat: number };
+  isAdjusting: boolean;
+  onBeatAdjust: (time: number) => void;
 }
 
-const WAVEFORM_HEIGHT = 100;
 const PEAK_COLOR = 'rgba(255, 255, 255, 0.5)';
 const SCRUBBER_COLOR = '#F87171'; // A bright red/coral
 
-export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuffer, peaks, duration, currentTime, onSeek }) => {
+export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuffer, peaks, duration, currentTime, onSeek, beatInfo, isAdjusting, onBeatAdjust }) => {
   const waveformCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const parentRef = useRef<HTMLDivElement>(null);
@@ -35,16 +37,16 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
   const panStartInfo = useRef({ x: 0, start: 0, moved: false });
 
   // Use a ref to hold the latest props and state to allow draw functions to be stable
-  const latestDataRef = useRef({ audioBuffer, peaks, duration, currentTime, viewRange });
+  const latestDataRef = useRef({ audioBuffer, peaks, duration, currentTime, viewRange, beatInfo });
   useEffect(() => {
-    latestDataRef.current = { audioBuffer, peaks, duration, currentTime, viewRange };
+    latestDataRef.current = { audioBuffer, peaks, duration, currentTime, viewRange, beatInfo };
   });
   
   const drawWaveform = useCallback(() => {
     const canvas = waveformCanvasRef.current;
     if (!canvas) return;
     
-    const { audioBuffer, peaks, viewRange, duration } = latestDataRef.current;
+    const { audioBuffer, peaks, viewRange, duration, beatInfo } = latestDataRef.current;
     if (!audioBuffer) return;
 
     const ctx = canvas.getContext('2d');
@@ -70,36 +72,42 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
       const amp = height / 2;
 
       const gradient = ctx.createLinearGradient(0, 0, 0, height);
-      gradient.addColorStop(0, '#585CF8');
-      gradient.addColorStop(1, '#A047F8');
-      ctx.strokeStyle = gradient;
-      ctx.lineWidth = 1.5;
+      gradient.addColorStop(0, 'rgba(88, 92, 248, 0.8)');
+      gradient.addColorStop(0.5, 'rgba(160, 71, 248, 0.5)');
+      gradient.addColorStop(1, 'rgba(88, 92, 248, 0.8)');
+      ctx.fillStyle = gradient;
 
       ctx.beginPath();
+      let first = true;
+      // Top half
       for (let i = 0; i < width; i++) {
-          let max = -1.0;
+          let max = 0;
           const sampleStartIndex = startSample + i * step;
           for (let j = 0; j < step; j++) {
               const sample = data[sampleStartIndex + j] || 0;
               if (sample > max) max = sample;
           }
-          if (i === 0) ctx.moveTo(i, (1 + max) * amp);
-          else ctx.lineTo(i, (1 + max) * amp);
+          const y = (1 - max) * amp;
+          if (first) {
+              ctx.moveTo(i, y);
+              first = false;
+          } else {
+              ctx.lineTo(i, y);
+          }
       }
-      ctx.stroke();
-
-      ctx.beginPath();
-      for (let i = 0; i < width; i++) {
-          let min = 1.0;
+      // Bottom half (in reverse)
+      for (let i = width - 1; i >= 0; i--) {
+          let min = 0;
           const sampleStartIndex = startSample + i * step;
           for (let j = 0; j < step; j++) {
               const sample = data[sampleStartIndex + j] || 0;
               if (sample < min) min = sample;
           }
-          if (i === 0) ctx.moveTo(i, (1 + min) * amp);
-          else ctx.lineTo(i, (1 + min) * amp);
+          ctx.lineTo(i, (1 - min) * amp);
       }
-      ctx.stroke();
+
+      ctx.closePath();
+      ctx.fill();
 
       // Draw peak markers within view
       ctx.lineWidth = 1;
@@ -113,6 +121,38 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
               ctx.stroke();
           }
       });
+
+      // Draw beat grid
+      if (beatInfo && beatInfo.interval > 0) {
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.25)'; // A subtle blue
+
+        // Start drawing from the calculated phase
+        const firstBeatInGrid = beatInfo.phase;
+
+        for (let beatTime = firstBeatInGrid; beatTime < duration; beatTime += beatInfo.interval) {
+          // Only draw beats within the current view
+          if (beatTime >= viewRange.start * duration && beatTime <= viewRange.end * duration) {
+            const x = ((beatTime / duration - viewRange.start) / (viewRange.end - viewRange.start)) * width;
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, height);
+            ctx.stroke();
+          }
+        }
+
+        // Highlight the first significant beat
+        const firstBeatTime = beatInfo.firstBeat;
+        if (firstBeatTime >= viewRange.start * duration && firstBeatTime <= viewRange.end * duration) {
+            const x = ((firstBeatTime / duration - viewRange.start) / (viewRange.end - viewRange.start)) * width;
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = 'rgba(236, 72, 153, 0.8)'; // A bright pink/magenta
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, height);
+            ctx.stroke();
+        }
+      }
 
       ctx.restore();
     } catch (error) {
@@ -188,7 +228,7 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
   // Effect to redraw the waveform when its underlying data changes.
   useEffect(() => {
     drawWaveform();
-  }, [audioBuffer, peaks, viewRange, duration, drawWaveform]);
+  }, [audioBuffer, peaks, viewRange, duration, beatInfo, drawWaveform]);
 
   // Effect to redraw the scrubber when its position changes.
   useEffect(() => {
@@ -216,7 +256,17 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
   };
   
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    panStartInfo.current = { x: e.clientX, start: viewRange.start, moved: false };
+    // Always reset the 'moved' flag on a new mouse down. This ensures that a click
+    // in adjustment mode is not ignored just because the user previously panned.
+    panStartInfo.current.moved = false;
+
+    if (isAdjusting) {
+      return; // Don't initiate panning when in beat adjustment mode.
+    }
+    
+    // If not adjusting, set up for a potential pan.
+    panStartInfo.current.x = e.clientX;
+    panStartInfo.current.start = viewRange.start;
     setIsPanning(true);
   };
 
@@ -244,24 +294,33 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
   };
   
   const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    // Prevent action if a pan just occurred
+    if (panStartInfo.current.moved) return;
+
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const clickedFraction = x / rect.width;
     const timeFraction = viewRange.start + clickedFraction * (viewRange.end - viewRange.start);
-    onSeek(timeFraction * duration);
+    const time = timeFraction * duration;
+
+    if (isAdjusting) {
+      onBeatAdjust(time);
+    } else {
+      onSeek(time);
+    }
   };
   
   const controlButtonClasses = "bg-gray-700/80 hover:bg-gray-600/80 text-white rounded-md p-1.5 transition-colors backdrop-blur-sm";
 
   return (
-    <div className="w-full h-[100px] relative select-none" ref={parentRef}>
+    <div className="w-full h-[160px] relative select-none" ref={parentRef}>
       <canvas
           ref={waveformCanvasRef}
           className="w-full h-full block rounded-md"
       />
       <canvas
           ref={overlayCanvasRef}
-          className="w-full h-full block rounded-md absolute top-0 left-0 cursor-pointer"
+          className={`w-full h-full block rounded-md absolute top-0 left-0 ${isAdjusting ? 'cursor-crosshair' : 'cursor-pointer'}`}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}

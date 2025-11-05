@@ -73,6 +73,49 @@ const HERO_FEATURES = [
     }
 ];
 
+
+/**
+ * Analyzes the phase of the beat grid by creating a histogram of peak timings.
+ * This is more robust than relying on a single peak.
+ * @param peaks - An array of peak times in seconds.
+ * @param beatInterval - The duration of a single beat in seconds.
+ * @returns The phase (start time of the first beat) in seconds.
+ */
+const findBestPhase = (peaks: number[], beatInterval: number): number => {
+    if (!peaks || peaks.length < 2 || beatInterval <= 0) {
+        return (peaks?.[0] || 0) % beatInterval;
+    }
+
+    const numBins = 32; // Resolution for phase histogram
+    const bins = new Array(numBins).fill(0);
+    const relevantPeaks = peaks.slice(0, Math.min(peaks.length, 150));
+
+    for (const peakTime of relevantPeaks) {
+        const phaseFraction = (peakTime % beatInterval) / beatInterval;
+        const binIndex = Math.floor(phaseFraction * numBins);
+        bins[binIndex]++;
+    }
+
+    let maxCount = -1;
+    let bestBinIndex = -1;
+    for (let i = 0; i < numBins; i++) {
+        // Smooth histogram by considering neighboring bins
+        const count = bins[i] + bins[(i + 1) % numBins] * 0.5 + bins[(i - 1 + numBins) % numBins] * 0.5;
+        if (count > maxCount) {
+            maxCount = count;
+            bestBinIndex = i;
+        }
+    }
+
+    if (bestBinIndex === -1) {
+        return (peaks[0] || 0) % beatInterval;
+    }
+    
+    const bestPhaseFraction = (bestBinIndex + 0.5) / numBins;
+    return bestPhaseFraction * beatInterval;
+};
+
+
 const App: React.FC = () => {
     const [file, setFile] = useState<File | null>(null);
     const [fileType, setFileType] = useState<string | null>(null);
@@ -98,7 +141,9 @@ const App: React.FC = () => {
             return DEFAULT_SETTINGS;
         }
     });
-    
+    const [isAdjustingBeat, setIsAdjustingBeat] = useState(false);
+    const [userOverriddenBeat, setUserOverriddenBeat] = useState<number | null>(null);
+
     const audioContextRef = useRef<AudioContext | null>(null);
     
     useEffect(() => {
@@ -142,6 +187,8 @@ const App: React.FC = () => {
         setFileInfo(null);
         setSongFacts(null);
         setLoadingSongFacts(false);
+        setIsAdjustingBeat(false);
+        setUserOverriddenBeat(null);
         logInfo("State has been reset.");
     }, []);
 
@@ -280,7 +327,7 @@ const App: React.FC = () => {
             if (settings.useGemini) {
                 setLoadingInsights(true);
                 try {
-                    const fetchedInsights = await getMusicalInsights(detectedBpm);
+                    const fetchedInsights = await getMusicalInsights(detectedBpm, parsedMetadata);
                     setInsights(fetchedInsights);
                     logInfo("Musical insights fetched.", fetchedInsights);
                 } catch (insightError) {
@@ -308,14 +355,50 @@ const App: React.FC = () => {
     };
 
     const detectedBpm = analysisResult?.candidates?.[0]?.tempo;
-    const totalCandidateScore = analysisResult?.candidates.reduce((sum, candidate) => sum + candidate.count, 0) ?? 0;
-    const confidence = analysisResult && totalCandidateScore > 0
-        ? Math.round((analysisResult.candidates[0].count / totalCandidateScore) * 100)
-        : null;
-    const tempoSpread = analysisResult?.tempoVariability
-        ? analysisResult.tempoVariability.max - analysisResult.tempoVariability.min
-        : null;
-    const secondaryCandidates = analysisResult?.candidates.slice(1, 3) ?? [];
+
+    const beatInfo = React.useMemo(() => {
+        if (!activeBpm || !analysisResult?.peaks || analysisResult.peaks.length === 0) {
+            return { phase: 0, interval: 0, firstBeat: 0, isUserDefined: false };
+        }
+        const beatInterval = 60.0 / activeBpm;
+        const isUserDefined = userOverriddenBeat !== null;
+
+        if (isUserDefined) {
+            const phase = userOverriddenBeat % beatInterval;
+            return { phase, interval: beatInterval, firstBeat: userOverriddenBeat, isUserDefined };
+        }
+        
+        const phase = findBestPhase(analysisResult.peaks, beatInterval);
+
+        // Find the first actual peak that occurs close to a beat on the grid defined by the phase
+        let firstBeat = 0;
+        const tolerance = beatInterval / 4; // Allow some deviation
+        for (const peakTime of analysisResult.peaks) {
+            const timeSincePhase = peakTime - phase;
+            const remainder = timeSincePhase % beatInterval;
+            if (remainder < tolerance || beatInterval - remainder < tolerance) {
+                firstBeat = peakTime;
+                break;
+            }
+        }
+        // Fallback if no peak is close enough
+        if (firstBeat === 0) {
+            firstBeat = analysisResult.peaks[0] || 0;
+        }
+
+        return { phase, interval: beatInterval, firstBeat, isUserDefined: false };
+    }, [analysisResult?.peaks, activeBpm, userOverriddenBeat]);
+
+    const handleBeatAdjust = (time: number) => {
+        setUserOverriddenBeat(time);
+        setIsAdjustingBeat(false);
+        logInfo(`User adjusted first beat to ${time.toFixed(3)}s`);
+    };
+
+    const handleResetBeat = () => {
+        setUserOverriddenBeat(null);
+        logInfo("User reset first beat adjustment.");
+    };
 
     return (
         <div className="app-background text-white min-h-screen font-sans flex flex-col">
@@ -335,7 +418,7 @@ const App: React.FC = () => {
             </header>
 
             <main className="relative z-10 flex-grow w-full">
-                <div className="max-w-7xl mx-auto px-4 md:px-8 py-10 md:py-16 flex flex-col items-center">
+                <div className="max-w-7xl mx-auto px-4 md:px-8 py-10 md:py-16">
                     <div className="w-full space-y-12">
                     {!file && (
                         <section className="glass-card relative overflow-hidden animate-fade-in">
@@ -413,40 +496,23 @@ const App: React.FC = () => {
                     )}
 
                     {analysisResult && !isLoading && !error && detectedBpm && (
-                        <div className="animate-fade-in space-y-10">
-                            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-                                <button onClick={resetState} className="text-blue-300 hover:text-blue-200 transition-colors text-sm flex items-center gap-2">
+                        <div className="animate-fade-in space-y-8">
+                            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                                <button onClick={() => {
+                                    setIsAdjustingBeat(false);
+                                    resetState();
+                                }} className="text-blue-300 hover:text-blue-200 transition-colors text-sm flex items-center gap-2">
                                     <span aria-hidden>&larr;</span> Analyze another file
                                 </button>
-                                <div className="flex items-center gap-3 min-w-0">
-                                    <div className="text-left">
-                                        <p className="text-xs uppercase tracking-[0.35em] text-slate-400">Current track</p>
-                                        <p className="text-slate-200 text-sm font-mono truncate max-w-xs sm:max-w-sm" title={file?.name}>{file?.name}</p>
-                                    </div>
+                                <div className="flex items-center justify-end gap-3 min-w-0 bg-slate-900/60 border border-white/10 rounded-full px-4 py-2">
+                                    <p className="text-slate-200 text-sm font-mono truncate max-w-xs sm:max-w-sm" title={file?.name}>{metadata?.title ? `${metadata.artist} - ${metadata.title}` : file?.name}</p>
                                     <FileTypeBadge type={fileType} />
                                 </div>
                             </div>
 
-                            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                                <div className="analysis-highlight">
-                                    <span>Confidence</span>
-                                    <strong>{confidence !== null ? `${confidence}%` : '—'}</strong>
-                                    <p className="text-xs text-slate-400">Share of total candidate weight</p>
-                                </div>
-                                <div className="analysis-highlight">
-                                    <span>Tempo Spread</span>
-                                    <strong>{tempoSpread !== null ? `${tempoSpread.toFixed(1)} BPM` : 'Stable'}</strong>
-                                    <p className="text-xs text-slate-400">Range between slowest and fastest estimates</p>
-                                </div>
-                                <div className="analysis-highlight">
-                                    <span>Peak Alignment</span>
-                                    <strong>{analysisResult.peaks.length.toLocaleString()}</strong>
-                                    <p className="text-xs text-slate-400">Detected transients supporting the groove</p>
-                                </div>
-                            </div>
-
-                            <div className="grid lg:grid-cols-[360px,1fr] gap-8 xl:gap-12 items-start">
-                                <div className="w-full">
+                             <div className="grid lg:grid-cols-[400px,1fr] xl:grid-cols-[420px,1fr] gap-8 xl:gap-12 items-start">
+                                {/* Left Column */}
+                                <div className="w-full lg:sticky lg:top-8">
                                     <MetadataDisplay
                                         metadata={metadata}
                                         fileInfo={fileInfo}
@@ -454,13 +520,20 @@ const App: React.FC = () => {
                                         isLoadingFacts={loadingSongFacts}
                                     />
                                 </div>
-
-                                <div className="space-y-10">
-                                    <div className="glass-card rounded-3xl p-6 md:p-8 space-y-8">
+                                
+                                {/* Right Column */}
+                                <div className="w-full space-y-8">
+                                    <div className="glass-card rounded-3xl p-6 md:p-7 space-y-6">
                                         <BpmDisplay
                                             bpm={detectedBpm}
                                             tempoVariability={analysisResult.tempoVariability}
                                             year={metadata?.year}
+                                            firstBeatTime={beatInfo.firstBeat}
+                                            isUserDefined={beatInfo.isUserDefined}
+                                            isAdjusting={isAdjustingBeat}
+                                            onAdjustClick={() => setIsAdjustingBeat(true)}
+                                            onCancelAdjust={() => setIsAdjustingBeat(false)}
+                                            onResetBeat={handleResetBeat}
                                         />
 
                                         <WaveformVisualizer
@@ -469,6 +542,9 @@ const App: React.FC = () => {
                                             duration={audioBuffer?.duration || 0}
                                             currentTime={currentTime}
                                             onSeek={(time) => setCurrentTime(time)}
+                                            beatInfo={beatInfo}
+                                            isAdjusting={isAdjustingBeat}
+                                            onBeatAdjust={handleBeatAdjust}
                                         />
 
                                         <TempoControls
@@ -478,70 +554,34 @@ const App: React.FC = () => {
                                             onBpmChange={setActiveBpm}
                                             currentTime={currentTime}
                                             onTimeUpdate={setCurrentTime}
-                                            peaks={analysisResult.peaks}
+                                            beatInfo={beatInfo}
                                         />
                                     </div>
 
-                                    <div className="glass-card rounded-3xl p-6 md:p-8">
-                                        <h3 className="text-lg font-semibold text-slate-200 mb-4">Alternate Candidates</h3>
-                                        {secondaryCandidates.length === 0 ? (
-                                            <p className="text-sm text-slate-400">No strong alternatives detected. This tempo is rock solid.</p>
-                                        ) : (
-                                            <ul className="space-y-3 text-sm text-slate-200">
-                                                {secondaryCandidates.map((candidate) => (
-                                                    <li key={candidate.tempo} className="flex items-center justify-between">
-                                                        <span className="font-mono">{candidate.tempo.toFixed(2)} BPM</span>
-                                                        <span className="text-slate-400">Score: {candidate.count}</span>
-                                                    </li>
-                                                ))}
-                                            </ul>
-                                        )}
+                                    <BpmAnalysisVisualizer candidates={analysisResult.candidates} detectedBpm={detectedBpm} />
+
+                                    {loadingInsights && (
+                                        <div className="glass-card p-6 md:p-8 flex flex-col items-center justify-center gap-3">
+                                            <Loader small />
+                                            <p className="text-slate-300">Getting AI insights...</p>
+                                        </div>
+                                    )}
+                                    {insights && <MusicalInsights insights={insights} />}
+                                    
+                                    <div className="glass-card rounded-3xl p-6 md:p-8 flex flex-col items-center gap-4 text-center">
+                                        <h3 className="text-lg font-semibold text-slate-100">Was the analysis incorrect?</h3>
+                                        <button
+                                            onClick={() => setIsFeedbackModalOpen(true)}
+                                            className="bg-slate-800/80 hover:bg-slate-700 text-white font-semibold py-2.5 px-6 rounded-lg transition-colors flex items-center gap-2"
+                                        >
+                                            Submit Feedback
+                                        </button>
                                     </div>
-                                </div>
-                            </div>
-
-                            <BpmAnalysisVisualizer candidates={analysisResult.candidates} detectedBpm={detectedBpm} />
-
-                            {loadingInsights && (
-                                <div className="glass-card p-6 md:p-8 flex flex-col items-center justify-center gap-3">
-                                    <Loader small />
-                                    <p className="text-slate-300">Getting AI insights...</p>
-                                </div>
-                            )}
-                            {insights && <MusicalInsights insights={insights} />}
-
-                            <div className="glass-card rounded-3xl p-6 md:p-8 flex flex-col items-center gap-5 text-center">
-                                <h3 className="text-lg font-semibold text-slate-100">Need to report something?</h3>
-                                <p className="text-sm text-slate-400 max-w-xl">Share the real tempo or download diagnostics to help us improve the analyser.</p>
-                                <div className="flex flex-wrap justify-center gap-4">
-                                    <button
-                                        onClick={() => setIsFeedbackModalOpen(true)}
-                                        className="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 px-6 rounded-lg transition-colors"
-                                    >
-                                        Submit Feedback
-                                    </button>
-                                    <button
-                                        onClick={downloadLogs}
-                                        title="Download session logs for debugging"
-                                        className="bg-slate-800/80 hover:bg-slate-700 text-white font-semibold py-2.5 px-5 rounded-lg transition-colors flex items-center gap-2"
-                                    >
-                                        <DownloadIcon className="w-5 h-5"/>
-                                        Export Logs
-                                    </button>
-                                </div>
-
-                                <div className="w-full mt-6">
-                                    <SettingsMenu
-                                        settings={settings}
-                                        onSettingsChange={handleSettingsChange}
-                                        onOpenFeedback={() => setIsFeedbackModalOpen(true)}
-                                    />
                                 </div>
                             </div>
                         </div>
                     )}
                 </div>
-            </div>
             </main>
             
             <FeedbackModal 

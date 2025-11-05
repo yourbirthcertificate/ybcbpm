@@ -6,19 +6,26 @@ interface BpmDisplayProps {
   bpm: number;
   tempoVariability: TempoVariability | null;
   year?: string;
+  firstBeatTime?: number;
+  isUserDefined: boolean;
+  isAdjusting: boolean;
+  onAdjustClick: () => void;
+  onCancelAdjust: () => void;
+  onResetBeat: () => void;
 }
 
-const getVariabilityDescription = (stdDev: number): string => {
-    if (stdDev < 0.5) return 'Very Stable';
-    if (stdDev < 1.5) return 'Stable';
-    if (stdDev < 3.0) return 'Slightly Variable';
-    return 'High Variation';
-};
+const InfoIcon = (props: React.SVGProps<SVGSVGElement>) => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+        <circle cx="12" cy="12" r="10"></circle>
+        <line x1="12" y1="16" x2="12" y2="12"></line>
+        <line x1="12" y1="8" x2="12.01" y2="8"></line>
+    </svg>
+);
 
-
-export const BpmDisplay: React.FC<BpmDisplayProps> = ({ bpm, tempoVariability, year }) => {
-  const showVariability = tempoVariability && tempoVariability.stdDev > 0.75 && (tempoVariability.max - tempoVariability.min > 1.5);
+export const BpmDisplay: React.FC<BpmDisplayProps> = ({ bpm, tempoVariability, year, firstBeatTime, isUserDefined, isAdjusting, onAdjustClick, onCancelAdjust, onResetBeat }) => {
+  const showVariability = tempoVariability && tempoVariability.stdDev > 1.2 && (tempoVariability.max - tempoVariability.min > 2.5);
   const isOldSong = year && parseInt(year, 10) < 1975;
+  const showExtraInfo = showVariability || (firstBeatTime && firstBeatTime > 0);
   
   return (
     <div className="text-center">
@@ -28,23 +35,52 @@ export const BpmDisplay: React.FC<BpmDisplayProps> = ({ bpm, tempoVariability, y
       </p>
       <p className="text-xl text-slate-300">BPM</p>
 
-      {showVariability && (
-          <div className="mt-6 pt-4 border-t border-white/10 space-y-2 animate-fade-in text-sm">
-              <h4 className="font-bold text-slate-200">Tempo Drift Detected</h4>
-              <div className="flex justify-center items-center gap-x-6 gap-y-1 flex-wrap">
+      {showExtraInfo && (
+          <div className="mt-6 pt-4 border-t border-white/10 space-y-4 animate-fade-in text-sm text-center">
+              {showVariability && (
                   <div>
-                      <span className="text-slate-400">Variation: </span>
-                      <span className="font-semibold text-slate-100">{getVariabilityDescription(tempoVariability.stdDev)}</span>
+                      <h4 className="font-bold text-slate-200 flex items-center justify-center gap-2">
+                          <InfoIcon className="text-sky-300" />
+                          Variable Tempo Detected
+                      </h4>
+                      <p className="text-slate-300 max-w-xs mx-auto">
+                          This track's tempo fluctuates, ranging from <span className="font-semibold text-slate-100 font-mono">{formatBpm(tempoVariability.min)}</span> to <span className="font-semibold text-slate-100 font-mono">{formatBpm(tempoVariability.max)}</span> BPM. The primary BPM is an average and may not be perfectly accurate for the entire track.
+                      </p>
+                      {isOldSong && (
+                        <p className="text-xs text-slate-500 italic pt-2 max-w-xs mx-auto">
+                            Note: Tempo variation is common for songs from this era (pre-click track).
+                        </p>
+                      )}
                   </div>
-                   <div>
-                      <span className="text-slate-400">Range: </span>
-                      <span className="font-semibold text-slate-100 font-mono">{formatBpm(tempoVariability.min)} - {formatBpm(tempoVariability.max)}</span>
-                  </div>
-              </div>
-              {isOldSong && (
-                <p className="text-xs text-slate-500 italic pt-2">
-                    Note: Tempo variation is common for songs from this era (pre-click track).
-                </p>
+              )}
+               {firstBeatTime && firstBeatTime > 0 && (
+                <div className="text-center">
+                    {isAdjusting ? (
+                        <div className="bg-blue-900/40 border border-blue-500/50 rounded-lg px-3 py-2 max-w-xs mx-auto">
+                            <p className="font-semibold text-blue-200">Adjustment Mode Active</p>
+                            <p className="text-xs text-blue-300/80">Click the waveform to set the first beat.</p>
+                             <button onClick={onCancelAdjust} className="mt-2 text-xs bg-slate-700/80 hover:bg-slate-600/80 text-white rounded-full py-1 px-3 transition-colors">
+                                Cancel
+                            </button>
+                        </div>
+                    ) : (
+                        <>
+                            <p className="text-slate-300">
+                                {isUserDefined ? <span className="text-purple-300 font-semibold">User-set</span> : 'Auto-detected'} first beat at: <span className="font-semibold text-slate-100 font-mono">{firstBeatTime.toFixed(2)}s</span>
+                            </p>
+                            <div className="flex justify-center items-center gap-3 text-xs mt-1.5">
+                                <button onClick={onAdjustClick} className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-blue-300 transition-colors font-semibold">
+                                    {isUserDefined ? 'Re-adjust' : 'Adjust'}
+                                </button>
+                                {isUserDefined && (
+                                    <button onClick={onResetBeat} className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-slate-300 transition-colors">
+                                        Reset to Auto
+                                    </button>
+                                )}
+                            </div>
+                        </>
+                    )}
+                </div>
               )}
           </div>
       )}

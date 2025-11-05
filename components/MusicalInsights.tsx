@@ -1,4 +1,5 @@
 
+
 import React from 'react';
 import type { MusicalInsight } from '../types';
 
@@ -30,13 +31,25 @@ export const MusicalInsights: React.FC<MusicalInsightsProps> = ({ insights }) =>
             </InsightCard>
 
             <div className="md:col-span-2">
-                 <InsightCard title="Example Songs">
-                    <ul className="space-y-2 text-slate-300">
-                        {insights.exampleSongs.map((song) => (
-                            <li key={song.title}>
-                                <span className="font-semibold text-slate-100">{song.title}</span> by {song.artist}
-                            </li>
-                        ))}
+                 <InsightCard title="Similar Songs">
+                    <ul className="space-y-2">
+                        {insights.exampleSongs.map((song) => {
+                            const searchQuery = encodeURIComponent(`${song.title} ${song.artist}`);
+                            const youtubeUrl = `https://www.youtube.com/results?search_query=${searchQuery}`;
+                            return (
+                                <li key={song.title}>
+                                    <a
+                                        href={youtubeUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-slate-300 hover:text-white transition-colors group inline-block"
+                                        title={`Search for "${song.title}" on YouTube`}
+                                    >
+                                        <span className="font-semibold text-slate-100 group-hover:underline">{song.title}</span> by {song.artist}
+                                    </a>
+                                </li>
+                            );
+                        })}
                     </ul>
                 </InsightCard>
             </div>

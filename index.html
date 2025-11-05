@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>YBCBPM - v1.0</title>
-    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
     <style>
         .animate-fade-in { animation: fadeIn 0.5s ease-in-out; }
         @keyframes fadeIn {
@@ -19,15 +19,18 @@
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jsmediatags/3.9.5/jsmediatags.min.js"></script>
     <script type="importmap">
-    {
-      "imports": {
-        "@google/genai": "https://aistudiocdn.com/@google/genai@^1.28.0",
-        "react/": "https://aistudiocdn.com/react@^19.2.0/",
-        "react": "https://aistudiocdn.com/react@^19.2.0",
-        "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/"
-      }
-    }
-    </script>
+{
+  "imports": {
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.28.0",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "path": "https://aistudiocdn.com/path@^0.12.7",
+    "vite": "https://aistudiocdn.com/vite@^7.2.0",
+    "@vitejs/plugin-react": "https://aistudiocdn.com/@vitejs/plugin-react@^5.1.0"
+  }
+}
+</script>
     <link rel="stylesheet" href="/index.css">
 </head>
 <body>
@@ -391,15 +394,28 @@
                     }
                     
                     if (chunkBpms.length > 2) {
+                        const primaryBpm = overallResult.candidates[0].tempo;
+                        const tolerance = 0.05; // 5% tolerance for harmonic checks
+
+                        const normalizedChunkBpms = chunkBpms.map(bpm => {
+                            if (Math.abs(bpm - primaryBpm / 2) < (primaryBpm / 2) * tolerance) {
+                                return bpm * 2;
+                            }
+                            if (Math.abs(bpm - primaryBpm * 2) < (primaryBpm * 2) * tolerance) {
+                                return bpm / 2;
+                            }
+                            return bpm;
+                        });
+
                         let min = Infinity, max = -Infinity, sum = 0, sumSq = 0;
-                        for (const bpm of chunkBpms) {
+                        for (const bpm of normalizedChunkBpms) {
                             if (bpm < min) min = bpm;
                             if (bpm > max) max = bpm;
                             sum += bpm;
                             sumSq += bpm * bpm;
                         }
-                        const mean = sum / chunkBpms.length;
-                        const variance = sumSq / chunkBpms.length - mean * mean;
+                        const mean = sum / normalizedChunkBpms.length;
+                        const variance = sumSq / normalizedChunkBpms.length - mean * mean;
                         const stdDev = Math.sqrt(Math.max(0, variance));
                         
                         tempoVariability = { min, max, stdDev };

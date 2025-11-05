@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import type { MusicalInsight, SongFact } from '../types';
+import type { MusicalInsight, SongFact, TrackMetadata } from '../types';
 import { logError } from './loggingService';
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
@@ -9,12 +9,12 @@ const responseSchema = {
     properties: {
         genres: {
             type: Type.ARRAY,
-            description: "A list of 2-4 common music genres typically found at this tempo.",
+            description: "A list of 2-4 common music genres relevant to the song or its tempo.",
             items: { type: Type.STRING }
         },
         exampleSongs: {
             type: Type.ARRAY,
-            description: "A list of 3 well-known example songs at or very near this tempo.",
+            description: "A list of 3 similar, well-known songs that fans of the analyzed track might also enjoy.",
             items: {
                 type: Type.OBJECT,
                 properties: {
@@ -26,17 +26,23 @@ const responseSchema = {
         },
         mood: {
             type: Type.STRING,
-            description: "A brief, one-sentence description of the general mood or feeling this tempo evokes (e.g., 'energetic and danceable', 'calm and reflective')."
+            description: "A brief, one-sentence description of the analyzed song's general mood or feeling."
         }
     },
     required: ["genres", "exampleSongs", "mood"]
 };
 
 
-export const getMusicalInsights = async (bpm: number): Promise<MusicalInsight> => {
+export const getMusicalInsights = async (bpm: number, metadata: TrackMetadata | null): Promise<MusicalInsight> => {
     try {
-        const prompt = `You are a music expert. The tempo of a song is ${bpm} BPM. Provide a brief analysis of this tempo. Include common music genres, three well-known example songs, and the general mood this tempo evokes.`;
+        let prompt = `You are a music expert. The tempo of a song is approximately ${bpm.toFixed(1)} BPM.`;
+
+        if (metadata?.title && metadata.artist) {
+            prompt = `You are a music expert analyzing the song "${metadata.title}" by "${metadata.artist}", which has a tempo of approximately ${bpm.toFixed(1)} BPM.`;
+        }
         
+        prompt += " Provide a brief analysis. Include common music genres for this style and tempo, three similar well-known songs that fans might enjoy, and the general mood of this song.";
+
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: prompt,

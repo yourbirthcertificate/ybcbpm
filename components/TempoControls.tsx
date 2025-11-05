@@ -11,10 +11,10 @@ interface TempoControlsProps {
   onBpmChange: (newBpm: number) => void;
   currentTime: number;
   onTimeUpdate: (time: number) => void;
-  peaks: number[];
+  beatInfo: { phase: number; interval: number; firstBeat: number };
 }
 
-export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detectedBpm, activeBpm, onBpmChange, currentTime, onTimeUpdate, peaks }) => {
+export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detectedBpm, activeBpm, onBpmChange, currentTime, onTimeUpdate, beatInfo }) => {
     const [isPlaying, setIsPlaying] = useState(false);
     const [showPrecise, setShowPrecise] = useState(false);
     
@@ -133,15 +133,15 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
         playbackStartTimeRef.current = context.currentTime;
 
         // Metronome Synchronization
-        if (activeBpm > 0 && peaks && peaks.length > 0) {
-            const beatInterval = 60.0 / activeBpm;
-            const firstPeakTime = peaks[0];
-            const phase = firstPeakTime % beatInterval;
-
+        if (activeBpm > 0 && beatInfo && beatInfo.interval > 0) {
+            const { phase, interval: beatInterval } = beatInfo;
+            
             const timeSincePhase = offset - phase;
+            // Find the next beat that should occur after the current playback offset
             const beatsSincePhase = Math.ceil(timeSincePhase / beatInterval);
             const firstClickSongTime = phase + beatsSincePhase * beatInterval;
             
+            // Calculate how long until that beat happens from now
             const firstClickDelay = firstClickSongTime - offset;
             nextNoteTimeRef.current = context.currentTime + firstClickDelay;
 
@@ -157,7 +157,7 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
             }
         };
 
-    }, [audioBuffer, tick, scheduler, stopPlayback, activeBpm, peaks]);
+    }, [audioBuffer, tick, scheduler, stopPlayback, activeBpm, beatInfo]);
     
     // This effect handles seeking. It detects an external change to `currentTime`
     // and restarts playback if active.
