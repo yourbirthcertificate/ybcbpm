@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
+import { logError } from '../services/loggingService';
 
 // --- Icon Components ---
 const ZoomInIcon = (props: React.SVGProps<SVGSVGElement>) => (
@@ -37,102 +38,116 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
     const canvas = waveformCanvasRef.current;
     if (!canvas || !audioBuffer) return;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    
-    const dpr = window.devicePixelRatio || 1;
-    const width = canvas.width / dpr;
-    const height = canvas.height / dpr;
-    
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.save();
-    ctx.scale(dpr, dpr);
-
-    // --- Drawing Logic ---
-    const data = audioBuffer.getChannelData(0);
-    const viewDuration = (viewRange.end - viewRange.start) * duration;
-    const startSample = Math.floor(viewRange.start * duration * audioBuffer.sampleRate);
-    const endSample = Math.ceil(viewRange.end * duration * audioBuffer.sampleRate);
-    const visibleSamples = endSample - startSample;
-    const step = Math.ceil(visibleSamples / width);
-    const amp = height / 2;
-
-    const gradient = ctx.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, '#585CF8');
-    gradient.addColorStop(1, '#A047F8');
-    ctx.strokeStyle = gradient;
-    ctx.lineWidth = 1.5;
-
-    ctx.beginPath();
-    for (let i = 0; i < width; i++) {
-        let min = 1.0;
-        let max = -1.0;
-        const sampleStartIndex = startSample + i * step;
-        for (let j = 0; j < step; j++) {
-            const sample = data[sampleStartIndex + j] || 0;
-            if (sample < min) min = sample;
-            if (sample > max) max = sample;
-        }
-        if (i === 0) ctx.moveTo(i, (1 + max) * amp);
-        else ctx.lineTo(i, (1 + max) * amp);
+    if (!ctx) {
+      logError('Failed to acquire 2D context for waveform canvas.');
+      return;
     }
-    ctx.stroke();
 
-    ctx.beginPath();
-    for (let i = 0; i < width; i++) {
-        let min = 1.0;
-        let max = -1.0;
-        const sampleStartIndex = startSample + i * step;
-        for (let j = 0; j < step; j++) {
-            const sample = data[sampleStartIndex + j] || 0;
-            if (sample < min) min = sample;
-            if (sample > max) max = sample;
-        }
-        if (i === 0) ctx.moveTo(i, (1 + min) * amp);
-        else ctx.lineTo(i, (1 + min) * amp);
+    try {
+      const dpr = window.devicePixelRatio || 1;
+      const width = canvas.width / dpr;
+      const height = canvas.height / dpr;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.save();
+      ctx.scale(dpr, dpr);
+
+      // --- Drawing Logic ---
+      const data = audioBuffer.getChannelData(0);
+      const viewDuration = (viewRange.end - viewRange.start) * duration;
+      const startSample = Math.floor(viewRange.start * duration * audioBuffer.sampleRate);
+      const endSample = Math.ceil(viewRange.end * duration * audioBuffer.sampleRate);
+      const visibleSamples = endSample - startSample;
+      const step = Math.ceil(visibleSamples / width);
+      const amp = height / 2;
+
+      const gradient = ctx.createLinearGradient(0, 0, 0, height);
+      gradient.addColorStop(0, '#585CF8');
+      gradient.addColorStop(1, '#A047F8');
+      ctx.strokeStyle = gradient;
+      ctx.lineWidth = 1.5;
+
+      ctx.beginPath();
+      for (let i = 0; i < width; i++) {
+          let min = 1.0;
+          let max = -1.0;
+          const sampleStartIndex = startSample + i * step;
+          for (let j = 0; j < step; j++) {
+              const sample = data[sampleStartIndex + j] || 0;
+              if (sample < min) min = sample;
+              if (sample > max) max = sample;
+          }
+          if (i === 0) ctx.moveTo(i, (1 + max) * amp);
+          else ctx.lineTo(i, (1 + max) * amp);
+      }
+      ctx.stroke();
+
+      ctx.beginPath();
+      for (let i = 0; i < width; i++) {
+          let min = 1.0;
+          let max = -1.0;
+          const sampleStartIndex = startSample + i * step;
+          for (let j = 0; j < step; j++) {
+              const sample = data[sampleStartIndex + j] || 0;
+              if (sample < min) min = sample;
+              if (sample > max) max = sample;
+          }
+          if (i === 0) ctx.moveTo(i, (1 + min) * amp);
+          else ctx.lineTo(i, (1 + min) * amp);
+      }
+      ctx.stroke();
+
+      // Draw peak markers within view
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = PEAK_COLOR;
+      peaks.forEach(peakTime => {
+          if (peakTime >= viewRange.start * duration && peakTime <= viewRange.end * duration) {
+              const x = ((peakTime / duration - viewRange.start) / (viewRange.end - viewRange.start)) * width;
+              ctx.beginPath();
+              ctx.moveTo(x, 0);
+              ctx.lineTo(x, height);
+              ctx.stroke();
+          }
+      });
+
+      ctx.restore();
+    } catch (error) {
+      logError('Failed to render waveform visualization.', error);
     }
-    ctx.stroke();
-    
-    // Draw peak markers within view
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = PEAK_COLOR;
-    peaks.forEach(peakTime => {
-        if (peakTime >= viewRange.start * duration && peakTime <= viewRange.end * duration) {
-            const x = ((peakTime / duration - viewRange.start) / (viewRange.end - viewRange.start)) * width;
-            ctx.beginPath();
-            ctx.moveTo(x, 0);
-            ctx.lineTo(x, height);
-            ctx.stroke();
-        }
-    });
-
-    ctx.restore();
   }, [audioBuffer, peaks, viewRange, duration]);
 
   const drawScrubber = useCallback(() => {
     const canvas = overlayCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    const width = canvas.width / dpr;
-    const height = canvas.height / dpr;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.save();
-    ctx.scale(dpr, dpr);
-
-    if (duration > 0 && currentTime >= viewRange.start * duration && currentTime <= viewRange.end * duration) {
-      const scrubberX = ((currentTime / duration - viewRange.start) / (viewRange.end - viewRange.start)) * width;
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = SCRUBBER_COLOR;
-      ctx.beginPath();
-      ctx.moveTo(scrubberX, 0);
-      ctx.lineTo(scrubberX, height);
-      ctx.stroke();
+    if (!ctx) {
+      logError('Failed to acquire 2D context for waveform overlay canvas.');
+      return;
     }
 
-    ctx.restore();
+    try {
+      const dpr = window.devicePixelRatio || 1;
+      const width = canvas.width / dpr;
+      const height = canvas.height / dpr;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.save();
+      ctx.scale(dpr, dpr);
+
+      if (duration > 0 && currentTime >= viewRange.start * duration && currentTime <= viewRange.end * duration) {
+        const scrubberX = ((currentTime / duration - viewRange.start) / (viewRange.end - viewRange.start)) * width;
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = SCRUBBER_COLOR;
+        ctx.beginPath();
+        ctx.moveTo(scrubberX, 0);
+        ctx.lineTo(scrubberX, height);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    } catch (error) {
+      logError('Failed to render waveform scrubber overlay.', error);
+    }
   }, [currentTime, duration, viewRange]);
 
   useEffect(() => {
