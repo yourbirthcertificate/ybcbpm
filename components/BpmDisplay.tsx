@@ -22,27 +22,27 @@ export const BpmDisplay: React.FC<BpmDisplayProps> = ({ bpm, tempoVariability, y
   
   return (
     <div className="text-center">
-      <p className="text-sm text-gray-400">Detected Tempo</p>
-      <p className="text-6xl md:text-8xl font-bold tracking-tighter bg-gradient-to-r from-blue-400 to-purple-500 text-transparent bg-clip-text">
+      <p className="text-sm text-slate-400 tracking-[0.3em] uppercase">Detected Tempo</p>
+      <p className="text-6xl md:text-8xl font-bold tracking-tighter bg-gradient-to-r from-blue-300 via-sky-300 to-purple-400 text-transparent bg-clip-text drop-shadow-[0_18px_45px_rgba(59,130,246,0.25)]">
         {formatBpm(bpm)}
       </p>
-      <p className="text-xl text-gray-300">BPM</p>
+      <p className="text-xl text-slate-300">BPM</p>
 
       {showVariability && (
-          <div className="mt-6 pt-4 border-t border-gray-700/50 space-y-2 animate-fade-in text-sm">
-              <h4 className="font-bold text-gray-200">Tempo Drift Detected</h4>
+          <div className="mt-6 pt-4 border-t border-white/10 space-y-2 animate-fade-in text-sm">
+              <h4 className="font-bold text-slate-200">Tempo Drift Detected</h4>
               <div className="flex justify-center items-center gap-x-6 gap-y-1 flex-wrap">
                   <div>
-                      <span className="text-gray-400">Variation: </span>
-                      <span className="font-semibold text-white">{getVariabilityDescription(tempoVariability.stdDev)}</span>
+                      <span className="text-slate-400">Variation: </span>
+                      <span className="font-semibold text-slate-100">{getVariabilityDescription(tempoVariability.stdDev)}</span>
                   </div>
                    <div>
-                      <span className="text-gray-400">Range: </span>
-                      <span className="font-semibold text-white font-mono">{formatBpm(tempoVariability.min)} - {formatBpm(tempoVariability.max)}</span>
+                      <span className="text-slate-400">Range: </span>
+                      <span className="font-semibold text-slate-100 font-mono">{formatBpm(tempoVariability.min)} - {formatBpm(tempoVariability.max)}</span>
                   </div>
               </div>
               {isOldSong && (
-                <p className="text-xs text-gray-500 italic pt-2">
+                <p className="text-xs text-slate-500 italic pt-2">
                     Note: Tempo variation is common for songs from this era (pre-click track).
                 </p>
               )}

@@ -192,9 +192,11 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
         }
     }, [isPlaying, audioBuffer, stopPlayback, startPlayback, onTimeUpdate]);
     
-    const getButtonClass = (isActive: boolean) => 
-        `px-4 py-2 rounded-md transition-colors text-sm font-semibold ${
-            isActive ? 'bg-blue-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+    const getButtonClass = (isActive: boolean) =>
+        `px-4 py-2 rounded-lg transition-all text-sm font-semibold ${
+            isActive
+                ? 'bg-gradient-to-r from-blue-500 to-purple-500 text-white shadow-[0_12px_25px_rgba(59,130,246,0.35)]'
+                : 'bg-slate-800/80 hover:bg-slate-700 text-slate-200'
         }`;
 
     const variations = [
@@ -210,19 +212,22 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
 
     return (
         <div className="mt-4 flex flex-col items-center gap-4">
-             <div 
+             <div
                 className={`text-center ${hasDecimal ? 'cursor-pointer' : ''}`}
                 onClick={() => hasDecimal && setShowPrecise(!showPrecise)}
                 title={hasDecimal ? (showPrecise ? 'Click to show rounded BPM' : 'Click to show precise BPM') : ''}
             >
-                <p className="text-sm text-gray-400">Selected Tempo</p>
-                <p className={`text-5xl font-bold tracking-tighter bg-gradient-to-r from-blue-400 to-purple-500 text-transparent bg-clip-text transition-all duration-300 ${isPlaying ? 'animate-pulse' : ''}`}>
+                <p className="text-sm text-slate-400">Selected Tempo</p>
+                <p className={`text-5xl font-bold tracking-tighter bg-gradient-to-r from-blue-300 via-sky-300 to-purple-400 text-transparent bg-clip-text transition-all duration-300 ${isPlaying ? 'animate-pulse' : ''}`}>
                     {displayValue} <span className="text-2xl">BPM</span>
                 </p>
+                {hasDecimal && (
+                    <p className="text-xs text-slate-500 mt-1">Tap to toggle precise rounding</p>
+                )}
             </div>
-            <div className="flex items-center justify-center gap-3 bg-gray-900/50 p-2 rounded-lg">
+            <div className="flex items-center justify-center gap-3 bg-slate-900/60 border border-white/10 p-2 rounded-2xl">
                {variations.map(v => (
-                 <button 
+                 <button
                     key={v.label}
                     onClick={() => {
                         onBpmChange(v.value)
@@ -234,7 +239,7 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
             </div>
             <button
                 onClick={handlePlayPause}
-                className="bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-500 text-white rounded-lg p-3 transition-all duration-200 shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-opacity-75 flex items-center gap-2 w-40 justify-center"
+                className="bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-400 hover:to-purple-400 disabled:bg-slate-800 disabled:text-slate-500 text-white rounded-xl p-3 transition-all duration-200 shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-400/70 flex items-center gap-2 w-40 justify-center"
                 disabled={!audioBuffer}
                 aria-label={isPlaying ? 'Pause Preview' : 'Preview Tempo'}
             >

@@ -49,15 +49,18 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect }) => {
     }
   }, [onFileSelect]);
   
-  const dragActiveClasses = isDragging ? 'border-blue-400 bg-gray-700/50' : 'border-gray-600';
+  const dragActiveClasses = isDragging
+    ? 'border-blue-400/80 shadow-[0_0_45px_rgba(59,130,246,0.35)] scale-[1.01]'
+    : 'border-white/10';
+  const containerStateClass = isDragging ? 'file-upload-hover' : '';
 
   return (
     <div
+      className={`file-upload-zone ${containerStateClass} relative overflow-hidden flex flex-col items-center justify-center p-8 border-2 border-dashed ${dragActiveClasses} rounded-2xl transition-all duration-300 text-center cursor-pointer bg-slate-900/60 backdrop-blur-xl`}
       onDragEnter={handleDragIn}
       onDragLeave={handleDragOut}
       onDragOver={handleDrag}
       onDrop={handleDrop}
-      className={`flex flex-col items-center justify-center p-8 border-2 border-dashed ${dragActiveClasses} rounded-xl transition-all duration-300 text-center cursor-pointer`}
       onClick={handleButtonClick}
     >
       <input
@@ -67,11 +70,12 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect }) => {
         onChange={handleFileChange}
         className="hidden"
       />
-      <MusicIcon className="w-16 h-16 text-gray-500 mb-4" />
-      <h3 className="text-xl font-semibold text-white">
-        Drop your audio file here or <span className="text-blue-400">browse</span>
+      <div className="file-upload-glow"></div>
+      <MusicIcon className="w-16 h-16 text-blue-300 mb-4 drop-shadow-[0_0_18px_rgba(56,189,248,0.35)]" />
+      <h3 className="text-2xl font-semibold text-white">
+        Drop your audio file here or <span className="text-blue-300">browse</span>
       </h3>
-      <p className="text-gray-400 mt-1">Supports MP3, FLAC, WAV, OGG & more</p>
+      <p className="text-slate-300 mt-2 max-w-sm">Supports MP3, FLAC, WAV, OGG & more. Drag & drop to feel the magic.</p>
     </div>
   );
 };
