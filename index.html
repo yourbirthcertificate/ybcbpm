@@ -237,6 +237,7 @@
             if (peaks.length < 4) return 0;
             const limited = peaks.slice(0, Math.min(peaks.length, MAX_ALIGNMENT_PEAKS));
             if (limited.length < 4) return 0;
+            if (peaks.length < 2) return 0;
             const period = (60 / tempo) * sampleRate;
             if (!isFinite(period) || period <= 0) {
                 return 0;
@@ -269,6 +270,28 @@
                 }
             }
             return best;
+            const multipliers = [0.5, 1, 1.5, 2];
+            const tolerance = period * 0.3;
+            if (tolerance <= 0) return 0;
+            let score = 0;
+            let count = 0;
+            for (let i = 1; i < peaks.length; i++) {
+                const interval = peaks[i] - peaks[i - 1];
+                if (interval <= 0) continue;
+                let bestDistance = Infinity;
+                for (let j = 0; j < multipliers.length; j++) {
+                    const target = period * multipliers[j];
+                    const distance = Math.abs(interval - target);
+                    if (distance < bestDistance) {
+                        bestDistance = distance;
+                    }
+                }
+                const normalized = Math.min(bestDistance / tolerance, 1);
+                score += 1 - normalized;
+                count++;
+            }
+            if (!count) return 0;
+            return score / count;
         }
 
         function combineCandidates(visualCandidates, audialCandidates, envelopePeaks) {
@@ -293,6 +316,7 @@
                 const emphasis = Math.max(0.05, alignment * alignment + alignment * 0.15);
                 candidate.count *= emphasis;
                 candidate.alignment = alignment;
+                candidate.count *= 1 + alignment;
             });
             results.sort((a, b) => b.count - a.count);
 
@@ -333,6 +357,7 @@
 
             const alignmentPeaks = envelopePeaks.slice(0, MAX_ALIGNMENT_PEAKS);
             const combinedCandidates = combineCandidates(visualCandidates, audialCandidates, alignmentPeaks).slice(0, 24);
+            const combinedCandidates = combineCandidates(visualCandidates, audialCandidates, envelopePeaks).slice(0, 24);
 
             return {
                 candidates: combinedCandidates,
