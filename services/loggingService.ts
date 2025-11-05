@@ -8,8 +8,12 @@ interface LogEntry {
   details?: any;
 }
 
-// Store logs in memory for the duration of the session
 const logs: LogEntry[] = [];
+let isVerbose = false;
+
+export const setVerboseLogging = (enabled: boolean) => {
+  isVerbose = enabled;
+};
 
 const log = (level: LogLevel, message: string, details?: any) => {
   const entry: LogEntry = {
@@ -20,10 +24,9 @@ const log = (level: LogLevel, message: string, details?: any) => {
   };
   logs.push(entry);
   
-  // Also output to console for real-time debugging
   if (level === 'ERROR') {
     console.error(`[${entry.timestamp}] ${entry.message}`, entry.details || '');
-  } else {
+  } else if (isVerbose) {
     console.log(`[${entry.timestamp}] ${entry.message}`, entry.details || '');
   }
 };

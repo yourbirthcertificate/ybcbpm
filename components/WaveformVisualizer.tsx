@@ -33,10 +33,20 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
   const [viewRange, setViewRange] = useState({ start: 0, end: 1 }); // Range as a fraction [0, 1]
   const [isPanning, setIsPanning] = useState(false);
   const panStartInfo = useRef({ x: 0, start: 0, moved: false });
+
+  // Use a ref to hold the latest props and state to allow draw functions to be stable
+  const latestDataRef = useRef({ audioBuffer, peaks, duration, currentTime, viewRange });
+  useEffect(() => {
+    latestDataRef.current = { audioBuffer, peaks, duration, currentTime, viewRange };
+  });
   
   const drawWaveform = useCallback(() => {
     const canvas = waveformCanvasRef.current;
-    if (!canvas || !audioBuffer) return;
+    if (!canvas) return;
+    
+    const { audioBuffer, peaks, viewRange, duration } = latestDataRef.current;
+    if (!audioBuffer) return;
+
     const ctx = canvas.getContext('2d');
     if (!ctx) {
       logError('Failed to acquire 2D context for waveform canvas.');
@@ -54,10 +64,8 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
 
       // --- Drawing Logic ---
       const data = audioBuffer.getChannelData(0);
-      const viewDuration = (viewRange.end - viewRange.start) * duration;
       const startSample = Math.floor(viewRange.start * duration * audioBuffer.sampleRate);
-      const endSample = Math.ceil(viewRange.end * duration * audioBuffer.sampleRate);
-      const visibleSamples = endSample - startSample;
+      const visibleSamples = Math.floor((viewRange.end - viewRange.start) * duration * audioBuffer.sampleRate);
       const step = Math.ceil(visibleSamples / width);
       const amp = height / 2;
 
@@ -69,12 +77,10 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
 
       ctx.beginPath();
       for (let i = 0; i < width; i++) {
-          let min = 1.0;
           let max = -1.0;
           const sampleStartIndex = startSample + i * step;
           for (let j = 0; j < step; j++) {
               const sample = data[sampleStartIndex + j] || 0;
-              if (sample < min) min = sample;
               if (sample > max) max = sample;
           }
           if (i === 0) ctx.moveTo(i, (1 + max) * amp);
@@ -85,12 +91,10 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
       ctx.beginPath();
       for (let i = 0; i < width; i++) {
           let min = 1.0;
-          let max = -1.0;
           const sampleStartIndex = startSample + i * step;
           for (let j = 0; j < step; j++) {
               const sample = data[sampleStartIndex + j] || 0;
               if (sample < min) min = sample;
-              if (sample > max) max = sample;
           }
           if (i === 0) ctx.moveTo(i, (1 + min) * amp);
           else ctx.lineTo(i, (1 + min) * amp);
@@ -114,11 +118,13 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
     } catch (error) {
       logError('Failed to render waveform visualization.', error);
     }
-  }, [audioBuffer, peaks, viewRange, duration]);
+  }, []);
 
   const drawScrubber = useCallback(() => {
     const canvas = overlayCanvasRef.current;
     if (!canvas) return;
+    const { currentTime, duration, viewRange } = latestDataRef.current;
+    
     const ctx = canvas.getContext('2d');
     if (!ctx) {
       logError('Failed to acquire 2D context for waveform overlay canvas.');
@@ -148,8 +154,9 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
     } catch (error) {
       logError('Failed to render waveform scrubber overlay.', error);
     }
-  }, [currentTime, duration, viewRange]);
+  }, []);
 
+  // Effect to handle container resizes. Runs only once on mount.
   useEffect(() => {
     const waveformCanvas = waveformCanvasRef.current;
     const overlayCanvas = overlayCanvasRef.current;
@@ -159,6 +166,7 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
     const resizeObserver = new ResizeObserver(() => {
       const dpr = window.devicePixelRatio || 1;
       const rect = container.getBoundingClientRect();
+      
       waveformCanvas.width = rect.width * dpr;
       waveformCanvas.height = rect.height * dpr;
       waveformCanvas.style.width = `${rect.width}px`;
@@ -177,13 +185,15 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
     return () => resizeObserver.disconnect();
   }, [drawWaveform, drawScrubber]);
 
+  // Effect to redraw the waveform when its underlying data changes.
   useEffect(() => {
     drawWaveform();
-  }, [drawWaveform]);
+  }, [audioBuffer, peaks, viewRange, duration, drawWaveform]);
 
+  // Effect to redraw the scrubber when its position changes.
   useEffect(() => {
     drawScrubber();
-  }, [drawScrubber]);
+  }, [currentTime, duration, viewRange, drawScrubber]);
 
   const handleZoom = (factor: number) => {
     const currentRange = viewRange.end - viewRange.start;
@@ -247,16 +257,16 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
     <div className="w-full h-[100px] relative select-none" ref={parentRef}>
       <canvas
           ref={waveformCanvasRef}
-          className="w-full h-full block rounded-md cursor-pointer"
+          className="w-full h-full block rounded-md"
+      />
+      <canvas
+          ref={overlayCanvasRef}
+          className="w-full h-full block rounded-md absolute top-0 left-0 cursor-pointer"
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={() => setIsPanning(false)}
           onClick={handleClick}
-      />
-      <canvas
-          ref={overlayCanvasRef}
-          className="w-full h-full block rounded-md pointer-events-none"
       />
       <div className="absolute top-2 right-2 flex gap-1 z-10">
         <button onClick={() => handleZoom(0.5)} className={controlButtonClasses} title="Zoom In"><ZoomInIcon /></button>

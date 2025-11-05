@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI BPM Detector</title>
+    <title>YBCBPM - v1.0</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <style>
         body { background-color: #111827; }
@@ -18,6 +18,7 @@
             50% { opacity: .7; }
         }
     </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsmediatags/3.9.5/jsmediatags.min.js"></script>
     <script type="importmap">
     {
       "imports": {
@@ -37,334 +38,449 @@
     (function(global) {
         "use strict";
 
-        const TARGET_SAMPLE_RATE = 11025;
-        const MIN_BPM = 60;
-        const MAX_BPM = 200;
-        const VISUAL_WEIGHT = 0.35;
-        const AUDIAL_WEIGHT = 0.65;
-        const MAX_VISUAL_PEAKS = 600;
-        const MAX_ALIGNMENT_PEAKS = 900;
-        const VISUAL_LOOKAHEAD_PEAKS = 8;
-        const PEAK_THRESHOLD_MULTIPLIER = 1.5;
-        const ONSET_SMOOTHING_WINDOW_SECONDS = 0.04;
+        const workerCode = `
+            const TARGET_SAMPLE_RATE = 11025;
+            const MIN_BPM = 60;
+            const MAX_BPM = 200;
+            const VISUAL_WEIGHT = 0.35;
+            const AUDIAL_WEIGHT = 0.65;
+            const MAX_VISUAL_PEAKS = 600;
+            const MAX_ALIGNMENT_PEAKS = 900;
+            const VISUAL_LOOKAHEAD_PEAKS = 8;
+            const PEAK_THRESHOLD_MULTIPLIER = 1.5;
+            const ONSET_SMOOTHING_WINDOW_SECONDS = 0.04;
 
-        function mixDownToMono(buffer) {
-            if (buffer.numberOfChannels === 1) {
-                return buffer.getChannelData(0).slice();
-            }
-            const length = buffer.length;
-            const tmp = new Float32Array(length);
-            for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
-                const channelData = buffer.getChannelData(channel);
+            function mixDownToMono(buffer) {
+                if (buffer.numberOfChannels === 1) {
+                    return buffer.getChannelData(0).slice();
+                }
+                const length = buffer.length;
+                const tmp = new Float32Array(length);
+                for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+                    const channelData = buffer.getChannelData(channel);
+                    for (let i = 0; i < length; i++) {
+                        tmp[i] += channelData[i];
+                    }
+                }
                 for (let i = 0; i < length; i++) {
-                    tmp[i] += channelData[i];
+                    tmp[i] /= buffer.numberOfChannels;
                 }
+                return tmp;
             }
-            for (let i = 0; i < length; i++) {
-                tmp[i] /= buffer.numberOfChannels;
-            }
-            return tmp;
-        }
 
-        function downsampleBuffer(data, sampleRate, targetRate) {
-            if (sampleRate <= targetRate) {
-                return data.slice();
+            function downsampleBuffer(data, sampleRate, targetRate) {
+                if (sampleRate <= targetRate) {
+                    return data.slice();
+                }
+                const ratio = sampleRate / targetRate;
+                const newLength = Math.floor(data.length / ratio);
+                const downsampled = new Float32Array(newLength);
+                for (let i = 0; i < newLength; i++) {
+                    const start = Math.floor(i * ratio);
+                    const end = Math.min(data.length, Math.floor((i + 1) * ratio));
+                    let sum = 0;
+                    let count = 0;
+                    for (let j = start; j < end; j++) {
+                        sum += data[j];
+                        count++;
+                    }
+                    downsampled[i] = count > 0 ? sum / count : 0;
+                }
+                return downsampled;
             }
-            const ratio = sampleRate / targetRate;
-            const newLength = Math.floor(data.length / ratio);
-            const downsampled = new Float32Array(newLength);
-            for (let i = 0; i < newLength; i++) {
-                const start = Math.floor(i * ratio);
-                const end = Math.min(data.length, Math.floor((i + 1) * ratio));
+
+            function normalize(data) {
+                let max = 0;
+                for (let i = 0; i < data.length; i++) {
+                    const value = Math.abs(data[i]);
+                    if (value > max) {
+                        max = value;
+                    }
+                }
+                if (!max) return data;
+                const normalized = new Float32Array(data.length);
+                for (let i = 0; i < data.length; i++) {
+                    normalized[i] = data[i] / max;
+                }
+                return normalized;
+            }
+
+            function accumulateTempoEvidence(histogram, tempo, weight = 1) {
+                if (!isFinite(tempo) || tempo <= 0 || !weight) return;
+                let normalized = tempo;
+                let attenuation = 1;
+                while (normalized < MIN_BPM) {
+                    normalized *= 2;
+                    attenuation *= 0.5;
+                }
+                while (normalized > MAX_BPM) {
+                    normalized /= 2;
+                    attenuation *= 0.5;
+                }
+                if (normalized < MIN_BPM || normalized > MAX_BPM) return;
+                const key = Math.round(normalized * 4) / 4;
+                histogram.set(key, (histogram.get(key) || 0) + weight * attenuation);
+            }
+
+            function smoothAbsolute(signal, windowSize) {
+                const smoothed = new Float32Array(signal.length);
+                let accumulator = 0;
+                for (let i = 0; i < signal.length; i++) {
+                    const absValue = Math.abs(signal[i]);
+                    accumulator += absValue;
+                    if (i >= windowSize) {
+                        accumulator -= Math.abs(signal[i - windowSize]);
+                    }
+                    const divisor = Math.min(windowSize, i + 1);
+                    smoothed[i] = accumulator / divisor;
+                }
+                return smoothed;
+            }
+
+            function movingAverage(signal, windowSize) {
+                if (windowSize <= 1) return signal.slice();
+                const result = new Float32Array(signal.length);
                 let sum = 0;
-                let count = 0;
-                for (let j = start; j < end; j++) {
-                    sum += data[j];
-                    count++;
-                }
-                downsampled[i] = count > 0 ? sum / count : 0;
-            }
-            return downsampled;
-        }
-
-        function normalize(data) {
-            let max = 0;
-            for (let i = 0; i < data.length; i++) {
-                const value = Math.abs(data[i]);
-                if (value > max) {
-                    max = value;
-                }
-            }
-            if (!max) return data;
-            const normalized = new Float32Array(data.length);
-            for (let i = 0; i < data.length; i++) {
-                normalized[i] = data[i] / max;
-            }
-            return normalized;
-        }
-
-        function accumulateTempoEvidence(histogram, tempo, weight = 1) {
-            if (!isFinite(tempo) || tempo <= 0 || !weight) return;
-            let normalized = tempo;
-            let attenuation = 1;
-            while (normalized < MIN_BPM) {
-                normalized *= 2;
-                attenuation *= 0.5;
-            }
-            while (normalized > MAX_BPM) {
-                normalized /= 2;
-                attenuation *= 0.5;
-            }
-            if (normalized < MIN_BPM || normalized > MAX_BPM) return;
-            const key = Math.round(normalized * 4) / 4;
-            histogram.set(key, (histogram.get(key) || 0) + weight * attenuation);
-        }
-
-        function smoothAbsolute(signal, windowSize) {
-            const smoothed = new Float32Array(signal.length);
-            let accumulator = 0;
-            for (let i = 0; i < signal.length; i++) {
-                const absValue = Math.abs(signal[i]);
-                accumulator += absValue;
-                if (i >= windowSize) {
-                    accumulator -= Math.abs(signal[i - windowSize]);
-                }
-                const divisor = Math.min(windowSize, i + 1);
-                smoothed[i] = accumulator / divisor;
-            }
-            return smoothed;
-        }
-
-        function movingAverage(signal, windowSize) {
-            if (windowSize <= 1) return signal.slice();
-            const result = new Float32Array(signal.length);
-            let sum = 0;
-            for (let i = 0; i < signal.length; i++) {
-                sum += signal[i];
-                if (i >= windowSize) {
-                    sum -= signal[i - windowSize];
-                }
-                const divisor = Math.min(windowSize, i + 1);
-                result[i] = sum / divisor;
-            }
-            return result;
-        }
-
-        function detectPeaks(data, sampleRate, thresholdMultiplier, minDistanceSeconds) {
-            const peaks = [];
-            let sum = 0;
-            let sumSquares = 0;
-            for (let i = 0; i < data.length; i++) {
-                sum += data[i];
-                sumSquares += data[i] * data[i];
-            }
-            const mean = sum / data.length;
-            const variance = Math.max(sumSquares / data.length - mean * mean, 0);
-            const stdDev = Math.sqrt(variance);
-            const threshold = mean + stdDev * thresholdMultiplier;
-            const minDistance = Math.max(1, Math.floor(minDistanceSeconds * sampleRate));
-            let lastPeakIndex = -Infinity;
-
-            for (let i = 1; i < data.length - 1; i++) {
-                const current = data[i];
-                if (current < threshold) continue;
-                if (current > data[i - 1] && current >= data[i + 1]) {
-                    if (i - lastPeakIndex >= minDistance) {
-                        peaks.push(i);
-                        lastPeakIndex = i;
+                for (let i = 0; i < signal.length; i++) {
+                    sum += signal[i];
+                    if (i >= windowSize) {
+                        sum -= signal[i - windowSize];
                     }
+                    const divisor = Math.min(windowSize, i + 1);
+                    result[i] = sum / divisor;
                 }
+                return result;
             }
-            return peaks;
-        }
 
-        function visualTempoEstimation(envelopePeaks, sampleRate) {
-            if (envelopePeaks.length < 2) return [];
-            const histogram = new Map();
-            const lookahead = VISUAL_LOOKAHEAD_PEAKS;
-            for (let i = 0; i < envelopePeaks.length - 1; i++) {
-                const base = envelopePeaks[i];
-                const limit = Math.min(envelopePeaks.length, i + 1 + lookahead);
-                for (let j = i + 1; j < limit; j++) {
-                    const interval = envelopePeaks[j] - base;
-                    if (interval <= 0) continue;
-                    const separation = j - i;
-                    const weight = 1 / separation;
-                    const tempo = (60 * sampleRate) / interval;
-                    accumulateTempoEvidence(histogram, tempo, weight);
-                }
-            }
-            const results = Array.from(histogram.entries()).map(([tempo, count]) => ({ tempo, count }));
-            results.sort((a, b) => b.count - a.count);
-            return results;
-        }
-
-        function computeAutoCorrelation(signal, sampleRate) {
-            const minLag = Math.max(1, Math.floor((sampleRate * 60) / MAX_BPM));
-            const maxLag = Math.min(signal.length - 1, Math.floor((sampleRate * 60) / MIN_BPM));
-            const correlations = new Float32Array(maxLag - minLag + 1);
-            let energy = 0;
-            for (let i = 0; i < signal.length; i++) {
-                energy += signal[i] * signal[i];
-            }
-            if (!energy) {
-                return [];
-            }
-            const histogram = new Map();
-            for (let lag = minLag; lag <= maxLag; lag++) {
+            function detectPeaks(data, sampleRate, thresholdMultiplier, minDistanceSeconds) {
+                const peaks = [];
                 let sum = 0;
-                for (let i = 0; i < signal.length - lag; i++) {
-                    sum += signal[i] * signal[i + lag];
+                let sumSquares = 0;
+                for (let i = 0; i < data.length; i++) {
+                    sum += data[i];
+                    sumSquares += data[i] * data[i];
                 }
-                correlations[lag - minLag] = sum / (signal.length - lag);
-            }
+                const mean = sum / data.length;
+                const variance = Math.max(sumSquares / data.length - mean * mean, 0);
+                const stdDev = Math.sqrt(variance);
+                const threshold = mean + stdDev * thresholdMultiplier;
+                const minDistance = Math.max(1, Math.floor(minDistanceSeconds * sampleRate));
+                let lastPeakIndex = -Infinity;
 
-            for (let i = 1; i < correlations.length - 1; i++) {
-                const current = correlations[i];
-                if (current <= 0) continue;
-                if (current > correlations[i - 1] && current >= correlations[i + 1]) {
-                    const lag = i + minLag;
-                    const tempo = (60 * sampleRate) / lag;
-                    accumulateTempoEvidence(histogram, tempo, current);
-                }
-            }
-            const candidates = Array.from(histogram.entries()).map(([tempo, count]) => ({ tempo, count }));
-            candidates.sort((a, b) => b.count - a.count);
-            return candidates;
-        }
-
-        function tempoAlignmentScore(peaks, tempo, sampleRate) {
-            if (peaks.length < 4) return 0;
-            const limited = peaks.slice(0, Math.min(peaks.length, MAX_ALIGNMENT_PEAKS));
-            if (limited.length < 4) return 0;
-            const period = (60 / tempo) * sampleRate;
-            if (!isFinite(period) || period <= 0) {
-                return 0;
-            }
-            const harmonics = [
-                { multiple: 1, weight: 1 },
-                { multiple: 2, weight: 0.7 },
-                { multiple: 3, weight: 0.5 }
-            ];
-            const twoPi = Math.PI * 2;
-            let best = 0;
-            for (let h = 0; h < harmonics.length; h++) {
-                const { multiple, weight } = harmonics[h];
-                if (!multiple) continue;
-                const effectivePeriod = period / multiple;
-                if (!isFinite(effectivePeriod) || effectivePeriod <= 2) continue;
-                let real = 0;
-                let imag = 0;
-                for (let i = 0; i < limited.length; i++) {
-                    const cycles = limited[i] / effectivePeriod;
-                    const fractional = cycles - Math.floor(cycles);
-                    const angle = fractional * twoPi;
-                    real += Math.cos(angle);
-                    imag += Math.sin(angle);
-                }
-                const magnitude = Math.sqrt(real * real + imag * imag) / limited.length;
-                const score = magnitude * weight;
-                if (score > best) {
-                    best = score;
-                }
-            }
-            return best;
-        }
-
-        function combineCandidates(visualCandidates, audialCandidates, envelopePeaks) {
-            const combined = new Map();
-
-            const accumulate = (source, weight) => {
-                source.forEach((candidate, index) => {
-                    const tempoKey = Math.round(candidate.tempo * 4) / 4;
-                    const existing = combined.get(tempoKey) || { tempo: tempoKey, count: 0 };
-                    const baseScore = candidate.count || (source.length - index);
-                    existing.count += baseScore * weight;
-                    combined.set(tempoKey, existing);
-                });
-            };
-
-            accumulate(visualCandidates, VISUAL_WEIGHT);
-            accumulate(audialCandidates, AUDIAL_WEIGHT);
-
-            const results = Array.from(combined.values());
-            const maxCount = Math.max(...results.map(r => r.count));
-
-            if (maxCount > 0) {
-                 results.forEach(candidate => {
-                    const alignment = tempoAlignmentScore(envelopePeaks, candidate.tempo, TARGET_SAMPLE_RATE);
-                    const normalizedCount = candidate.count / maxCount;
-                    
-                    let finalScore = Math.pow(normalizedCount, 0.3) * Math.pow(alignment, 2.0);
-                    
-                    if (candidate.tempo >= 95 && candidate.tempo <= 180) {
-                        finalScore *= 1.5;
+                for (let i = 1; i < data.length - 1; i++) {
+                    const current = data[i];
+                    if (current < threshold) continue;
+                    if (current > data[i - 1] && current >= data[i + 1]) {
+                        if (i - lastPeakIndex >= minDistance) {
+                            peaks.push(i);
+                            lastPeakIndex = i;
+                        }
                     }
+                }
+                return peaks;
+            }
 
-                    candidate.count = isNaN(finalScore) ? 0 : finalScore;
-                    candidate.alignment = alignment;
-                });
-            } else {
-                 results.forEach(candidate => {
-                    candidate.alignment = tempoAlignmentScore(envelopePeaks, candidate.tempo, TARGET_SAMPLE_RATE);
-                    let finalScore = candidate.alignment;
-
-                    if (candidate.tempo >= 95 && candidate.tempo <= 180) {
-                        finalScore *= 1.5;
+            function visualTempoEstimation(envelopePeaks, sampleRate) {
+                if (envelopePeaks.length < 2) return [];
+                const histogram = new Map();
+                const lookahead = VISUAL_LOOKAHEAD_PEAKS;
+                for (let i = 0; i < envelopePeaks.length - 1; i++) {
+                    const base = envelopePeaks[i];
+                    const limit = Math.min(envelopePeaks.length, i + 1 + lookahead);
+                    for (let j = i + 1; j < limit; j++) {
+                        const interval = envelopePeaks[j] - base;
+                        if (interval <= 0) continue;
+                        const separation = j - i;
+                        const weight = 1 / separation;
+                        const tempo = (60 * sampleRate) / interval;
+                        accumulateTempoEvidence(histogram, tempo, weight);
                     }
-                    candidate.count = finalScore;
-                 });
+                }
+                const results = Array.from(histogram.entries()).map(([tempo, count]) => ({ tempo, count }));
+                results.sort((a, b) => b.count - a.count);
+                return results;
             }
-           
-            results.sort((a, b) => b.count - a.count);
 
-            return results;
-        }
+            function computeAutoCorrelation(signal, sampleRate) {
+                const minLag = Math.max(1, Math.floor((sampleRate * 60) / MAX_BPM));
+                const maxLag = Math.min(signal.length - 1, Math.floor((sampleRate * 60) / MIN_BPM));
+                const correlations = new Float32Array(maxLag - minLag + 1);
+                let energy = 0;
+                for (let i = 0; i < signal.length; i++) {
+                    energy += signal[i] * signal[i];
+                }
+                if (!energy) {
+                    return [];
+                }
+                const histogram = new Map();
+                for (let lag = minLag; lag <= maxLag; lag++) {
+                    let sum = 0;
+                    for (let i = 0; i < signal.length - lag; i++) {
+                        sum += signal[i] * signal[i + lag];
+                    }
+                    correlations[lag - minLag] = sum / (signal.length - lag);
+                }
 
-        async function analyse(buffer) {
-            const monoData = mixDownToMono(buffer);
-            const downsampled = downsampleBuffer(monoData, buffer.sampleRate, TARGET_SAMPLE_RATE);
-            const normalized = normalize(downsampled);
-
-            const envelopeWindow = Math.max(1, Math.round(TARGET_SAMPLE_RATE * 0.02));
-            const envelope = smoothAbsolute(normalized, envelopeWindow);
-            const enhancedEnvelope = movingAverage(envelope, Math.round(envelopeWindow * 0.5));
-
-            const minPeakSpacingSeconds = 60 / MAX_BPM;
-            const envelopePeaks = detectPeaks(
-                enhancedEnvelope,
-                TARGET_SAMPLE_RATE,
-                PEAK_THRESHOLD_MULTIPLIER,
-                minPeakSpacingSeconds
-            );
-
-            const trimmedPeaks = envelopePeaks.slice(0, MAX_VISUAL_PEAKS);
-            const peakTimes = trimmedPeaks.map(index => index / TARGET_SAMPLE_RATE);
-
-            const visualCandidates = visualTempoEstimation(trimmedPeaks, TARGET_SAMPLE_RATE);
-
-            const onsetSignal = new Float32Array(enhancedEnvelope.length);
-            onsetSignal[0] = 0;
-            for (let i = 1; i < enhancedEnvelope.length; i++) {
-                const diff = enhancedEnvelope[i] - enhancedEnvelope[i - 1];
-                onsetSignal[i] = diff > 0 ? diff : 0;
+                for (let i = 1; i < correlations.length - 1; i++) {
+                    const current = correlations[i];
+                    if (current <= 0) continue;
+                    if (current > correlations[i - 1] && current >= correlations[i + 1]) {
+                        const lag = i + minLag;
+                        const tempo = (60 * sampleRate) / lag;
+                        accumulateTempoEvidence(histogram, tempo, current);
+                    }
+                }
+                const candidates = Array.from(histogram.entries()).map(([tempo, count]) => ({ tempo, count }));
+                candidates.sort((a, b) => b.count - a.count);
+                return candidates;
             }
-            const onsetSmoothingWindow = Math.max(1, Math.round(TARGET_SAMPLE_RATE * ONSET_SMOOTHING_WINDOW_SECONDS));
-            const onsetSmoothed = movingAverage(onsetSignal, onsetSmoothingWindow);
-            const audialCandidates = computeAutoCorrelation(onsetSmoothed, TARGET_SAMPLE_RATE);
 
-            const alignmentPeaks = envelopePeaks.slice(0, MAX_ALIGNMENT_PEAKS);
-            const combinedCandidates = combineCandidates(visualCandidates, audialCandidates, alignmentPeaks).slice(0, 24);
+            function tempoAlignmentScore(peaks, tempo, sampleRate) {
+                if (peaks.length < 4) return 0;
+                const limited = peaks.slice(0, Math.min(peaks.length, MAX_ALIGNMENT_PEAKS));
+                if (limited.length < 4) return 0;
+                const period = (60 / tempo) * sampleRate;
+                if (!isFinite(period) || period <= 0) {
+                    return 0;
+                }
+                const harmonics = [
+                    { multiple: 1, weight: 1 },
+                    { multiple: 2, weight: 0.7 },
+                    { multiple: 3, weight: 0.5 }
+                ];
+                const twoPi = Math.PI * 2;
+                let best = 0;
+                for (let h = 0; h < harmonics.length; h++) {
+                    const { multiple, weight } = harmonics[h];
+                    if (!multiple) continue;
+                    const effectivePeriod = period / multiple;
+                    if (!isFinite(effectivePeriod) || effectivePeriod <= 2) continue;
+                    let real = 0;
+                    let imag = 0;
+                    for (let i = 0; i < limited.length; i++) {
+                        const cycles = limited[i] / effectivePeriod;
+                        const fractional = cycles - Math.floor(cycles);
+                        const angle = fractional * twoPi;
+                        real += Math.cos(angle);
+                        imag += Math.sin(angle);
+                    }
+                    const magnitude = Math.sqrt(real * real + imag * imag) / limited.length;
+                    const score = magnitude * weight;
+                    if (score > best) {
+                        best = score;
+                    }
+                }
+                return best;
+            }
 
-            return {
-                candidates: combinedCandidates,
-                peaks: peakTimes
+            function combineCandidates(visualCandidates, audialCandidates, envelopePeaks) {
+                const combined = new Map();
+
+                const accumulate = (source, weight) => {
+                    source.forEach((candidate, index) => {
+                        const tempoKey = Math.round(candidate.tempo * 4) / 4;
+                        const existing = combined.get(tempoKey) || { tempo: tempoKey, count: 0 };
+                        const baseScore = candidate.count || (source.length - index);
+                        existing.count += baseScore * weight;
+                        combined.set(tempoKey, existing);
+                    });
+                };
+
+                accumulate(visualCandidates, VISUAL_WEIGHT);
+                accumulate(audialCandidates, AUDIAL_WEIGHT);
+
+                const results = Array.from(combined.values());
+                const maxCount = Math.max(...results.map(r => r.count));
+
+                if (maxCount > 0) {
+                     results.forEach(candidate => {
+                        const alignment = tempoAlignmentScore(envelopePeaks, candidate.tempo, TARGET_SAMPLE_RATE);
+                        const normalizedCount = candidate.count / maxCount;
+                        
+                        let finalScore = Math.pow(normalizedCount, 0.3) * Math.pow(alignment, 2.0);
+                        
+                        if (candidate.tempo >= 95 && candidate.tempo <= 180) {
+                            finalScore *= 1.5;
+                        }
+
+                        candidate.count = isNaN(finalScore) ? 0 : finalScore;
+                        candidate.alignment = alignment;
+                    });
+                } else {
+                     results.forEach(candidate => {
+                        candidate.alignment = tempoAlignmentScore(envelopePeaks, candidate.tempo, TARGET_SAMPLE_RATE);
+                        let finalScore = candidate.alignment;
+
+                        if (candidate.tempo >= 95 && candidate.tempo <= 180) {
+                            finalScore *= 1.5;
+                        }
+                        candidate.count = finalScore;
+                     });
+                }
+               
+                results.sort((a, b) => b.count - a.count);
+
+                return results;
+            }
+
+            function performFullAnalysis(audioData, sampleRate) {
+                const envelopeWindow = Math.max(1, Math.round(sampleRate * 0.02));
+                const envelope = smoothAbsolute(audioData, envelopeWindow);
+                const enhancedEnvelope = movingAverage(envelope, Math.round(envelopeWindow * 0.5));
+
+                const minPeakSpacingSeconds = 60 / MAX_BPM;
+                const envelopePeaks = detectPeaks(
+                    enhancedEnvelope,
+                    sampleRate,
+                    PEAK_THRESHOLD_MULTIPLIER,
+                    minPeakSpacingSeconds
+                );
+
+                const trimmedPeaks = envelopePeaks.slice(0, MAX_VISUAL_PEAKS);
+                const peakTimes = trimmedPeaks.map(index => index / sampleRate);
+
+                const visualCandidates = visualTempoEstimation(trimmedPeaks, sampleRate);
+
+                const onsetSignal = new Float32Array(enhancedEnvelope.length);
+                onsetSignal[0] = 0;
+                for (let i = 1; i < enhancedEnvelope.length; i++) {
+                    const diff = enhancedEnvelope[i] - enhancedEnvelope[i - 1];
+                    onsetSignal[i] = diff > 0 ? diff : 0;
+                }
+                const onsetSmoothingWindow = Math.max(1, Math.round(sampleRate * ONSET_SMOOTHING_WINDOW_SECONDS));
+                const onsetSmoothed = movingAverage(onsetSignal, onsetSmoothingWindow);
+                const audialCandidates = computeAutoCorrelation(onsetSmoothed, sampleRate);
+
+                const alignmentPeaks = envelopePeaks.slice(0, MAX_ALIGNMENT_PEAKS);
+                const combinedCandidates = combineCandidates(visualCandidates, audialCandidates, alignmentPeaks).slice(0, 24);
+
+                return {
+                    candidates: combinedCandidates,
+                    peaks: peakTimes
+                };
+            }
+
+            function analyse(buffer) {
+                const monoData = mixDownToMono(buffer);
+                const downsampled = downsampleBuffer(monoData, buffer.sampleRate, TARGET_SAMPLE_RATE);
+                const normalized = normalize(downsampled);
+
+                // --- Overall Analysis ---
+                const overallResult = performFullAnalysis(normalized, TARGET_SAMPLE_RATE);
+
+                // --- Segmented Analysis for Variability ---
+                const CHUNK_SECONDS = 20;
+                const CHUNK_OVERLAP_SECONDS = 10;
+                const MIN_SONG_DURATION_FOR_CHUNKING = CHUNK_SECONDS + 5;
+                
+                let tempoVariability = null;
+                const songDuration = normalized.length / TARGET_SAMPLE_RATE;
+
+                if (songDuration > MIN_SONG_DURATION_FOR_CHUNKING) {
+                    const chunkSamples = CHUNK_SECONDS * TARGET_SAMPLE_RATE;
+                    const overlapSamples = CHUNK_OVERLAP_SECONDS * TARGET_SAMPLE_RATE;
+                    const stepSamples = chunkSamples - overlapSamples;
+                    
+                    const chunkBpms = [];
+
+                    for (let offset = 0; (offset + chunkSamples) <= normalized.length; offset += stepSamples) {
+                        const chunkData = normalized.slice(offset, offset + chunkSamples);
+                        const chunkResult = performFullAnalysis(chunkData, TARGET_SAMPLE_RATE);
+                        if (chunkResult.candidates && chunkResult.candidates.length > 0) {
+                            chunkBpms.push(chunkResult.candidates[0].tempo);
+                        }
+                    }
+                    
+                    if (chunkBpms.length > 2) {
+                        let min = Infinity, max = -Infinity, sum = 0, sumSq = 0;
+                        for (const bpm of chunkBpms) {
+                            if (bpm < min) min = bpm;
+                            if (bpm > max) max = bpm;
+                            sum += bpm;
+                            sumSq += bpm * bpm;
+                        }
+                        const mean = sum / chunkBpms.length;
+                        const variance = sumSq / chunkBpms.length - mean * mean;
+                        const stdDev = Math.sqrt(Math.max(0, variance));
+                        
+                        tempoVariability = { min, max, stdDev };
+                    }
+                }
+                
+                return {
+                    candidates: overallResult.candidates,
+                    peaks: overallResult.peaks.map(p => p + (buffer.length / buffer.sampleRate - songDuration)), // Adjust peak times for full buffer
+                    tempoVariability: tempoVariability,
+                };
+            }
+
+            self.onmessage = (event) => {
+                const { bufferData, sampleRate, numberOfChannels, length } = event.data;
+                const buffer = {
+                    length,
+                    sampleRate,
+                    numberOfChannels,
+                    getChannelData: (i) => bufferData[i],
+                };
+                try {
+                    const result = analyse(buffer);
+                    self.postMessage(result);
+                } catch (e) {
+                    self.postMessage({ error: e.message });
+                }
+            };
+        `;
+
+        try {
+            const blob = new Blob([workerCode], { type: 'application/javascript' });
+            const worker = new Worker(URL.createObjectURL(blob));
+
+            global.BpmAnalyser = {
+                analyse: (buffer) => {
+                    return new Promise((resolve, reject) => {
+                        const channels = [];
+                        for (let i = 0; i < buffer.numberOfChannels; i++) {
+                            // slice() creates a copy that can be transferred.
+                            channels.push(buffer.getChannelData(i).slice());
+                        }
+
+                        const messageHandler = (event) => {
+                            worker.removeEventListener('message', messageHandler);
+                            worker.removeEventListener('error', errorHandler);
+                            if (event.data.error) {
+                                reject(new Error(event.data.error));
+                            } else {
+                                resolve(event.data);
+                            }
+                        };
+                        
+                        const errorHandler = (event) => {
+                            worker.removeEventListener('message', messageHandler);
+                            worker.removeEventListener('error', errorHandler);
+                            reject(new Error(event.message || "An error occurred in the BPM analysis worker."));
+                            event.preventDefault();
+                        };
+                        
+                        worker.addEventListener('message', messageHandler);
+                        worker.addEventListener('error', errorHandler);
+
+                        const transferable = channels.map(c => c.buffer);
+
+                        worker.postMessage({
+                            bufferData: channels,
+                            sampleRate: buffer.sampleRate,
+                            numberOfChannels: buffer.numberOfChannels,
+                            length: buffer.length
+                        }, transferable);
+                    });
+                }
+            };
+        } catch(e) {
+            console.error("Failed to create BPM analysis worker. Analysis will not be available.", e);
+            global.BpmAnalyser = {
+                analyse: () => Promise.reject(new Error("BPM analysis worker could not be initialized."))
             };
         }
-
-        global.BpmAnalyser = {
-            analyse
-        };
     })(window);
     </script>
     <script type="module" src="/index.tsx"></script>

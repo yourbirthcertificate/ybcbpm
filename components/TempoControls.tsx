@@ -75,7 +75,7 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
     }, [stopPlayback]);
 
     const tick = useCallback(() => {
-        if (isPlaying && audioContextRef.current) {
+        if (audioContextRef.current) {
             const elapsedTime = audioContextRef.current.currentTime - playbackStartTimeRef.current;
             const newTime = startOffsetRef.current + elapsedTime;
             internalTimeRef.current = newTime;
@@ -89,7 +89,7 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
                  animationFrameRef.current = requestAnimationFrame(tick);
             }
         }
-    }, [isPlaying, onTimeUpdate, audioBuffer, stopPlayback]);
+    }, [onTimeUpdate, audioBuffer, stopPlayback]);
 
     const scheduleClick = useCallback((time: number) => {
         const context = audioContextRef.current;

@@ -5,8 +5,8 @@ interface FeedbackModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSubmit: (feedback: { correctBpm: string; comments: string }) => void;
-  detectedBpm: number;
-  fileName: string;
+  detectedBpm?: number;
+  fileName?: string;
 }
 
 export const FeedbackModal: React.FC<FeedbackModalProps> = ({ isOpen, onClose, onSubmit, detectedBpm, fileName }) => {
@@ -29,6 +29,8 @@ export const FeedbackModal: React.FC<FeedbackModalProps> = ({ isOpen, onClose, o
     onSubmit({ correctBpm, comments: comments.trim() });
   };
 
+  const hasFileInfo = typeof detectedBpm !== 'undefined' && fileName;
+
   return (
     <div 
       className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50 animate-fade-in"
@@ -40,34 +42,43 @@ export const FeedbackModal: React.FC<FeedbackModalProps> = ({ isOpen, onClose, o
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="text-2xl font-bold mb-4 text-center">Submit Feedback</h2>
-        <p className="text-center text-gray-400 mb-2">File: <span className="font-mono">{fileName}</span></p>
-        <p className="text-center text-gray-400 mb-6">Detected BPM: <span className="font-bold text-white">{formatBpm(detectedBpm)}</span></p>
+        {hasFileInfo && (
+            <>
+                <p className="text-center text-gray-400 mb-2">File: <span className="font-mono">{fileName}</span></p>
+                <p className="text-center text-gray-400 mb-6">Detected BPM: <span className="font-bold text-white">{formatBpm(detectedBpm)}</span></p>
+            </>
+        )}
 
         <form onSubmit={handleSubmit}>
-          <div className="mb-4">
-            <label htmlFor="correct-bpm" className="block text-sm font-medium text-gray-300 mb-2">What is the correct BPM?</label>
-            <input
-              type="text"
-              inputMode="decimal"
-              pattern="[0-9]+(\.[0-9]{1,2})?"
-              id="correct-bpm"
-              value={correctBpm}
-              onChange={(e) => setCorrectBpm(e.target.value)}
-              placeholder="e.g., 120.55"
-              required
-              className="w-full bg-gray-900 border border-gray-600 rounded-lg p-3 text-white focus:ring-blue-500 focus:border-blue-500"
-            />
-          </div>
+            {hasFileInfo && (
+                <div className="mb-4">
+                    <label htmlFor="correct-bpm" className="block text-sm font-medium text-gray-300 mb-2">What is the correct BPM?</label>
+                    <input
+                    type="text"
+                    inputMode="decimal"
+                    pattern="[0-9]+(\.[0-9]{1,2})?"
+                    id="correct-bpm"
+                    value={correctBpm}
+                    onChange={(e) => setCorrectBpm(e.target.value)}
+                    placeholder="e.g., 120.55"
+                    required
+                    className="w-full bg-gray-900 border border-gray-600 rounded-lg p-3 text-white focus:ring-blue-500 focus:border-blue-500"
+                    />
+                </div>
+            )}
 
           <div className="mb-6">
-            <label htmlFor="comments" className="block text-sm font-medium text-gray-300 mb-2">Additional Comments (Optional)</label>
+            <label htmlFor="comments" className="block text-sm font-medium text-gray-300 mb-2">
+                {hasFileInfo ? "Additional Comments (Optional)" : "Comments / Suggestions"}
+            </label>
             <textarea
               id="comments"
               rows={4}
               value={comments}
               onChange={(e) => setComments(e.target.value)}
-              placeholder="Any other details you'd like to share?"
+              placeholder={hasFileInfo ? "Any other details you'd like to share?" : "What's on your mind?"}
               className="w-full bg-gray-900 border border-gray-600 rounded-lg p-3 text-white focus:ring-blue-500 focus:border-blue-500"
+              required={!hasFileInfo}
             />
           </div>
 
