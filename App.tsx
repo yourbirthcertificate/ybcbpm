@@ -10,6 +10,7 @@ import { WaveformVisualizer } from './components/WaveformVisualizer';
 import { TempoControls } from './components/TempoControls';
 import { FeedbackModal } from './components/FeedbackModal';
 import { DownloadIcon } from './components/icons/DownloadIcon';
+import { FileTypeBadge } from './components/FileTypeBadge';
 
 // Types
 import type { MusicalInsight, BpmCandidate } from './types';
@@ -29,6 +30,7 @@ declare global {
 
 const App: React.FC = () => {
     const [file, setFile] = useState<File | null>(null);
+    const [fileType, setFileType] = useState<string | null>(null);
     const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -54,6 +56,7 @@ const App: React.FC = () => {
 
     const resetState = useCallback(() => {
         setFile(null);
+        setFileType(null);
         setAudioBuffer(null);
         setIsLoading(false);
         setError(null);
@@ -70,6 +73,39 @@ const App: React.FC = () => {
         resetState();
         setIsLoading(true);
         setFile(selectedFile);
+
+        // Determine file type
+        let determinedType = '';
+        const mimeType = selectedFile.type;
+        const extension = selectedFile.name.split('.').pop()?.toUpperCase();
+
+        if (mimeType) {
+            switch (mimeType) {
+                case 'audio/mpeg':
+                    determinedType = 'MP3';
+                    break;
+                case 'audio/flac':
+                case 'audio/x-flac':
+                    determinedType = 'FLAC';
+                    break;
+                case 'audio/wav':
+                case 'audio/x-wav':
+                    determinedType = 'WAV';
+                    break;
+                case 'audio/ogg':
+                    determinedType = 'OGG';
+                    break;
+                default:
+                    if (extension && ['MP3', 'FLAC', 'WAV', 'OGG', 'M4A', 'AAC'].includes(extension)) {
+                        determinedType = extension;
+                    }
+                    break;
+            }
+        } else if (extension && ['MP3', 'FLAC', 'WAV', 'OGG', 'M4A', 'AAC'].includes(extension)) {
+            determinedType = extension;
+        }
+        setFileType(determinedType);
+
         logInfo(`File selected: ${selectedFile.name}`, { type: selectedFile.type, size: selectedFile.size });
 
         if (!audioContextRef.current) {
@@ -163,7 +199,10 @@ const App: React.FC = () => {
                         <div className="animate-fade-in">
                             <div className="flex justify-between items-center mb-4">
                                 <button onClick={resetState} className="text-blue-400 hover:text-blue-300 transition-colors text-sm">&larr; Analyze another file</button>
-                                 <p className="text-gray-400 text-sm font-mono truncate max-w-xs" title={file?.name}>{file?.name}</p>
+                                 <div className="flex items-center min-w-0">
+                                    <p className="text-gray-400 text-sm font-mono truncate" title={file?.name}>{file?.name}</p>
+                                    <FileTypeBadge type={fileType} />
+                                 </div>
                             </div>
                             
                             <div className="bg-gray-800/50 p-6 md:p-8 rounded-2xl border border-gray-700 shadow-xl space-y-8">
@@ -184,6 +223,7 @@ const App: React.FC = () => {
                                     onBpmChange={setActiveBpm}
                                     currentTime={currentTime}
                                     onTimeUpdate={setCurrentTime}
+                                    peaks={analysisResult.peaks}
                                 />
                             </div>
                             

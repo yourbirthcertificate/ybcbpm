@@ -4,8 +4,6 @@ import { PauseIcon } from './icons/PauseIcon';
 import { formatBpm } from '../utils/formatters';
 import { logError } from '../services/loggingService';
 
-type BpmVariation = 'half' | 'normal' | 'double';
-
 interface TempoControlsProps {
   audioBuffer: AudioBuffer | null;
   detectedBpm: number;
@@ -13,52 +11,24 @@ interface TempoControlsProps {
   onBpmChange: (newBpm: number) => void;
   currentTime: number;
   onTimeUpdate: (time: number) => void;
+  peaks: number[];
 }
 
-export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detectedBpm, activeBpm, onBpmChange, currentTime, onTimeUpdate }) => {
+export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detectedBpm, activeBpm, onBpmChange, currentTime, onTimeUpdate, peaks }) => {
     const [isPlaying, setIsPlaying] = useState(false);
     const [showPrecise, setShowPrecise] = useState(false);
     
     const audioContextRef = useRef<AudioContext | null>(null);
     const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
-    const metronomeSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
     const gainNodeRef = useRef<GainNode | null>(null);
     const playbackStartTimeRef = useRef(0);
     const startOffsetRef = useRef(0);
     const animationFrameRef = useRef<number | null>(null);
+    const internalTimeRef = useRef(0); // Used to differentiate internal time updates from external seeks
 
     const schedulerIntervalRef = useRef<number | null>(null);
     const nextNoteTimeRef = useRef<number>(0);
-
-    // Setup AudioContext on mount
-    useEffect(() => {
-        if (!audioContextRef.current) {
-            try {
-                const context = new (window.AudioContext || (window as any).webkitAudioContext)();
-                audioContextRef.current = context;
-                gainNodeRef.current = context.createGain();
-                gainNodeRef.current.connect(context.destination);
-            } catch (e) {
-                logError('Web Audio API is not supported in this browser.', e);
-            }
-        }
-        return () => {
-             stopPlayback();
-             audioContextRef.current?.close();
-        }
-    }, []);
-
-    // Effect to handle seeking from parent
-    useEffect(() => {
-        if (Math.abs(currentTime - startOffsetRef.current) > 0.2) {
-            startOffsetRef.current = currentTime;
-            if (isPlaying) {
-                stopPlayback(false); // don't reset isPlaying state
-                startPlayback(currentTime);
-            }
-        }
-    }, [currentTime]);
 
     const stopPlayback = useCallback((updateState = true) => {
         if (animationFrameRef.current) {
@@ -83,15 +53,37 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
             setIsPlaying(false);
         }
     }, []);
-    
+
+    // Setup AudioContext on mount and teardown on unmount
+    useEffect(() => {
+        if (!audioContextRef.current) {
+            try {
+                const context = new (window.AudioContext || (window as any).webkitAudioContext)();
+                audioContextRef.current = context;
+                gainNodeRef.current = context.createGain();
+                gainNodeRef.current.connect(context.destination);
+            } catch (e) {
+                logError('Web Audio API is not supported in this browser.', e);
+            }
+        }
+        return () => {
+             stopPlayback();
+             if (audioContextRef.current) {
+                audioContextRef.current.close();
+             }
+        }
+    }, [stopPlayback]);
+
     const tick = useCallback(() => {
         if (isPlaying && audioContextRef.current) {
             const elapsedTime = audioContextRef.current.currentTime - playbackStartTimeRef.current;
             const newTime = startOffsetRef.current + elapsedTime;
+            internalTimeRef.current = newTime;
             onTimeUpdate(newTime);
 
             if (audioBuffer && newTime >= audioBuffer.duration) {
                 stopPlayback();
+                onTimeUpdate(audioBuffer.duration); // Ensure scrubber goes to the end
                 startOffsetRef.current = audioBuffer.duration;
             } else {
                  animationFrameRef.current = requestAnimationFrame(tick);
@@ -99,7 +91,7 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
         }
     }, [isPlaying, onTimeUpdate, audioBuffer, stopPlayback]);
 
-    const scheduleClick = (time: number) => {
+    const scheduleClick = useCallback((time: number) => {
         const context = audioContextRef.current;
         if (!context) return;
         const osc = context.createOscillator();
@@ -112,7 +104,7 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
         gain.connect(context.destination);
         osc.start(time);
         osc.stop(time + 0.1);
-    };
+    }, []);
 
     const scheduler = useCallback(() => {
         const context = audioContextRef.current;
@@ -122,7 +114,7 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
             scheduleClick(nextNoteTimeRef.current);
             nextNoteTimeRef.current += 60.0 / activeBpm;
         }
-    }, [activeBpm]);
+    }, [activeBpm, scheduleClick]);
 
     const startPlayback = useCallback(async (offset: number) => {
         const context = audioContextRef.current;
@@ -137,11 +129,24 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
         
         audioSourceRef.current = source;
         startOffsetRef.current = offset;
+        internalTimeRef.current = offset; // Sync internal time on start
         playbackStartTimeRef.current = context.currentTime;
 
-        // Metronome
-        nextNoteTimeRef.current = context.currentTime;
-        schedulerIntervalRef.current = window.setInterval(scheduler, 25);
+        // Metronome Synchronization
+        if (activeBpm > 0 && peaks && peaks.length > 0) {
+            const beatInterval = 60.0 / activeBpm;
+            const firstPeakTime = peaks[0];
+            const phase = firstPeakTime % beatInterval;
+
+            const timeSincePhase = offset - phase;
+            const beatsSincePhase = Math.ceil(timeSincePhase / beatInterval);
+            const firstClickSongTime = phase + beatsSincePhase * beatInterval;
+            
+            const firstClickDelay = firstClickSongTime - offset;
+            nextNoteTimeRef.current = context.currentTime + firstClickDelay;
+
+            schedulerIntervalRef.current = window.setInterval(scheduler, 25);
+        }
         
         setIsPlaying(true);
         animationFrameRef.current = requestAnimationFrame(tick);
@@ -152,8 +157,23 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
             }
         };
 
-    }, [audioBuffer, tick, scheduler, stopPlayback]);
+    }, [audioBuffer, tick, scheduler, stopPlayback, activeBpm, peaks]);
     
+    // This effect handles seeking. It detects an external change to `currentTime`
+    // and restarts playback if active.
+    useEffect(() => {
+        const isExternalChange = Math.abs(currentTime - internalTimeRef.current) > 0.01;
+
+        if (isExternalChange) {
+            startOffsetRef.current = currentTime;
+            internalTimeRef.current = currentTime; 
+            if (isPlaying) {
+                stopPlayback(false);
+                startPlayback(currentTime);
+            }
+        }
+    }, [currentTime, isPlaying, startPlayback, stopPlayback]);
+
     const handlePlayPause = useCallback(async () => {
         if (isPlaying) {
             // Update offset before stopping
@@ -205,8 +225,6 @@ export const TempoControls: React.FC<TempoControlsProps> = ({ audioBuffer, detec
                  <button 
                     key={v.label}
                     onClick={() => {
-                        stopPlayback();
-                        startOffsetRef.current = currentTime;
                         onBpmChange(v.value)
                     }} 
                     className={getButtonClass(Math.round(activeBpm) === Math.round(v.value))}>

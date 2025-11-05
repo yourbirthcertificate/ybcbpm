@@ -185,15 +185,16 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
     }
   };
 
-  const handleMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (isPanning && !panStartInfo.current.moved) { // It was a click, not a pan
-        const rect = e.currentTarget.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const clickedFraction = x / rect.width;
-        const timeFraction = viewRange.start + clickedFraction * (viewRange.end - viewRange.start);
-        onSeek(timeFraction * duration);
-    }
+  const handleMouseUp = () => {
     setIsPanning(false);
+  };
+  
+  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const clickedFraction = x / rect.width;
+    const timeFraction = viewRange.start + clickedFraction * (viewRange.end - viewRange.start);
+    onSeek(timeFraction * duration);
   };
   
   const controlButtonClasses = "bg-gray-700/80 hover:bg-gray-600/80 text-white rounded-md p-1.5 transition-colors backdrop-blur-sm";
@@ -207,6 +208,7 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ audioBuf
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={() => setIsPanning(false)}
+          onClick={handleClick}
       />
       <div className="absolute top-2 right-2 flex gap-1 z-10">
         <button onClick={() => handleZoom(0.5)} className={controlButtonClasses} title="Zoom In"><ZoomInIcon /></button>
